@@ -28,9 +28,15 @@ const {
     clearLoginAttempts
 } = require('../services/security');
 const { buildSigningSecret, issueAdminToken, verifyJwt } = require('../services/auth-token');
+const { ApiError, sendApiError } = require('../services/api-error');
+const { sanitizeAccountPayload, parseImportGids } = require('../services/admin-validators');
 
 const hashPassword = (pwd) => secureHash(pwd); // 兼容旧接口
 const adminLogger = createModuleLogger('admin');
+
+const MAX_FRIEND_CACHE_TOTAL = 5000;
+const MAX_FRIEND_CACHE_IMPORT = 500;
+
 
 let app = null;
 let server = null;
@@ -211,7 +217,7 @@ function startAdminServer(dataProvider) {
             const disabled = store.getDisablePasswordAuth ? store.getDisablePasswordAuth() : false;
             res.json({ ok: true, data: { disabled } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 
@@ -237,7 +243,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data: { disabled } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -305,9 +311,9 @@ function startAdminServer(dataProvider) {
 
     function handleApiError(res, err) {
         if (isSoftRuntimeError(err)) {
-            return res.json({ ok: false, error: err.message });
+            return sendApiError(res, new ApiError(err.message, 409, 'RUNTIME_SOFT_ERROR'));
         }
-        return res.status(500).json({ ok: false, error: err.message });
+        return sendApiError(res, err);
     }
 
     const resolveAccId = (rawRef) => {
@@ -342,7 +348,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -389,7 +395,7 @@ function startAdminServer(dataProvider) {
     // API: 好友农田详情
     app.get('/api/interact-records', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             const data = await provider.getInteractRecords(id);
             res.json({ ok: true, data });
@@ -412,7 +418,7 @@ function startAdminServer(dataProvider) {
     // API: 对指定好友执行单次操作（偷菜/浇水/除草/捣乱）
     app.post('/api/friend/:gid/op', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             const opType = String((req.body || {}).opType || '');
             const data = await provider.doFriendOp(id, req.params.gid, opType);
@@ -425,7 +431,7 @@ function startAdminServer(dataProvider) {
     // API: 好友黑名单
     app.get('/api/friend-blacklist', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             if (provider && typeof provider.getFriendBlacklist === 'function') {
                 const list = await provider.getFriendBlacklist(id);
@@ -490,22 +496,22 @@ function startAdminServer(dataProvider) {
 
     app.post('/api/friend-cache/import-gids', (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
-            const input = req.body.gids;
-            let gids = [];
-            if (typeof input === 'string') {
-                gids = input.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
-            } else if (Array.isArray(input)) {
-                gids = input;
-            }
-            const validGids = gids
-                .map(g => Number(g))
-                .filter(g => Number.isFinite(g) && g > 0);
+            const { gids: validGids } = parseImportGids((req.body || {}).gids, {
+                maxImport: MAX_FRIEND_CACHE_IMPORT,
+            });
             if (validGids.length === 0) {
-                return res.json({ ok: false, error: '没有有效的 GID' });
+                return sendApiError(res, new ApiError('没有有效的 GID', 400, 'INVALID_GID_LIST'));
             }
-            const friends = validGids.map(gid => ({
+            const current = store.getFriendCache ? store.getFriendCache(id) : [];
+            const currentList = Array.isArray(current) ? current : [];
+            const availableSlots = Math.max(0, MAX_FRIEND_CACHE_TOTAL - currentList.length);
+            if (availableSlots <= 0) {
+                return sendApiError(res, new ApiError(`好友缓存已达上限(${MAX_FRIEND_CACHE_TOTAL})`, 400, 'FRIEND_CACHE_FULL'));
+            }
+            const gidsToImport = validGids.slice(0, availableSlots);
+            const friends = gidsToImport.map(gid => ({
                 gid,
                 nick: `GID:${gid}`,
                 avatarUrl: '',
@@ -514,7 +520,9 @@ function startAdminServer(dataProvider) {
             if (provider && typeof provider.broadcastConfig === 'function') {
                 provider.broadcastConfig(id);
             }
-            return res.json({ ok: true, data: saved, message: `已导入 ${validGids.length} 个 GID` });
+            const truncated = gidsToImport.length < validGids.length;
+            const suffix = truncated ? `，受总上限限制仅导入 ${gidsToImport.length} 个` : '';
+            return res.json({ ok: true, data: saved, message: `已导入 ${gidsToImport.length} 个 GID${suffix}` });
         } catch (e) {
             return handleApiError(res, e);
         }
@@ -818,7 +826,8 @@ function startAdminServer(dataProvider) {
             const body = (req.body && typeof req.body === 'object') ? req.body : {};
             const isUpdate = !!body.id;
             const resolvedUpdateId = isUpdate ? resolveAccId(body.id) : '';
-            const payload = isUpdate ? { ...body, id: resolvedUpdateId || String(body.id) } : { ...body };
+            const rawPayload = isUpdate ? { ...body, id: resolvedUpdateId || String(body.id) } : { ...body };
+            const payload = sanitizeAccountPayload(rawPayload, { isUpdate });
             let wasRunning = false;
             let oldAccount = null;
             if (isUpdate && provider.isAccountRunning) {
@@ -892,7 +901,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 
@@ -908,7 +917,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 

@@ -22,6 +22,9 @@ const DEFAULT_OFFLINE_DELETE_SEC = 1;
 const DEFAULT_FERTILIZER_LAND_TYPES = ['gold', 'black', 'red', 'normal'];
 const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const DEFAULT_STEAL_PLANT_BLACKLIST = [];
+const MAX_FRIEND_CACHE_TOTAL = 5000;
+const WORKER_PERSIST_GUARD = process.env.FARM_WORKER === '1' || !!process.env.FARM_ACCOUNT_ID;
+
 const DEFAULT_OFFLINE_REMINDER = {
     channel: 'webhook',
     reloginUrlMode: 'none',
@@ -127,6 +130,7 @@ const globalConfig = {
     runtimeClient: { ...DEFAULT_RUNTIME_CLIENT, device_info: { ...DEFAULT_RUNTIME_CLIENT.device_info } },
     adminPasswordHash: '',
     disablePasswordAuth: false,
+    __rev: 0,
 };
 
 function normalizeOfflineReminder(input) {
@@ -319,7 +323,7 @@ function normalizeFertilizerLandTypes(input, fallback = DEFAULT_FERTILIZER_LAND_
         if (normalized.includes(value)) continue;
         normalized.push(value);
     }
-    return normalized;
+    return normalized.slice(0, MAX_FRIEND_CACHE_TOTAL);
 }
 
 function normalizeStealPlantBlacklist(input, fallback = DEFAULT_STEAL_PLANT_BLACKLIST) {
@@ -331,7 +335,7 @@ function normalizeStealPlantBlacklist(input, fallback = DEFAULT_STEAL_PLANT_BLAC
         if (normalized.includes(value)) continue;
         normalized.push(value);
     }
-    return normalized;
+    return normalized.slice(0, MAX_FRIEND_CACHE_TOTAL);
 }
 
 function normalizeBagSeedPriority(input) {
@@ -343,7 +347,7 @@ function normalizeBagSeedPriority(input) {
         if (normalized.includes(value)) continue;
         normalized.push(value);
     }
-    return normalized;
+    return normalized.slice(0, MAX_FRIEND_CACHE_TOTAL);
 }
 
 function normalizeFertilizerBuyAutomation(automation) {
@@ -372,7 +376,7 @@ function normalizeFriendCache(input) {
             avatarUrl: String(item.avatarUrl || '').trim(),
         });
     }
-    return normalized;
+    return normalized.slice(0, MAX_FRIEND_CACHE_TOTAL);
 }
 
 function mergeFriendCache(existing, newItems) {
@@ -601,6 +605,8 @@ function loadGlobalConfig() {
             if (typeof data.disablePasswordAuth === 'boolean') {
                 globalConfig.disablePasswordAuth = data.disablePasswordAuth;
             }
+            const loadedRev = Number(data.__rev || 0);
+            globalConfig.__rev = Number.isFinite(loadedRev) && loadedRev >= 0 ? loadedRev : 0;
         }
     } catch (e) {
         console.error('加载配置失败:', e.message);
@@ -630,24 +636,44 @@ function sanitizeGlobalConfigBeforeSave() {
         // 存盘时不强制写入 client_version（登录时派生即可），避免重复字段
         device_info: { ...getRuntimeClientConfig().device_info },
     };
+    globalConfig.__rev = Math.max(0, Number(globalConfig.__rev) || 0);
 }
+
 
 // 保存全局配置
 function saveGlobalConfig() {
+    if (WORKER_PERSIST_GUARD && process.env.ALLOW_WORKER_PERSIST !== '1') {
+        console.warn('[系统] Worker 进程禁止持久化全局配置，已跳过 saveGlobalConfig');
+        return false;
+    }
     ensureDataDir();
     try {
         const oldJson = readTextFile(STORE_FILE, '');
 
         sanitizeGlobalConfigBeforeSave();
+
+        // 简化并发边界：基于 __rev 做乐观并发控制
+        const diskData = readJsonFile(STORE_FILE, () => ({}));
+        const diskRev = Number(diskData && diskData.__rev) || 0;
+        const memRev = Number(globalConfig.__rev) || 0;
+        if (diskRev !== memRev) {
+            console.warn(`[系统] 配置版本冲突，取消写入 (diskRev=${diskRev}, memRev=${memRev})`);
+            loadGlobalConfig();
+            return false;
+        }
+
+        globalConfig.__rev = memRev + 1;
         const newJson = JSON.stringify(globalConfig, null, 2);
-        
+
         if (oldJson !== newJson) {
             console.warn('[系统] 正在保存配置到:', STORE_FILE);
             writeJsonFileAtomic(STORE_FILE, globalConfig);
+            return true;
         }
     } catch (e) {
         console.error('保存配置失败:', e.message);
     }
+    return false;
 }
 
 function getAdminPasswordHash() {
@@ -923,8 +949,13 @@ function loadAccounts() {
 }
 
 function saveAccounts(data) {
+    if (WORKER_PERSIST_GUARD && process.env.ALLOW_WORKER_PERSIST !== '1') {
+        console.warn('[系统] Worker 进程禁止持久化账号数据，已跳过 saveAccounts');
+        return false;
+    }
     ensureDataDir();
     writeJsonFileAtomic(ACCOUNTS_FILE, normalizeAccountsData(data));
+    return true;
 }
 
 function getAccounts() {
