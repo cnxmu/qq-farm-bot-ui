@@ -1,4 +1,3 @@
-const crypto = require('node:crypto');
 /**
  * 管理面板 HTTP 服务
  * 改写为接收 DataProvider 模式
@@ -28,6 +27,7 @@ const {
     recordLoginAttempts,
     clearLoginAttempts
 } = require('../services/security');
+const { buildSigningSecret, issueAdminToken, verifyJwt } = require('../services/auth-token');
 
 const hashPassword = (pwd) => secureHash(pwd); // 兼容旧接口
 const adminLogger = createModuleLogger('admin');
@@ -68,25 +68,57 @@ function startAdminServer(dataProvider) {
     app = express();
     app.use(express.json());
 
-    const tokens = new Set();
+    const revokedTokenIds = new Set();
+    const allowDisablePasswordAuth = process.env.NODE_ENV !== 'production';
+    const signingSecret = buildSigningSecret(
+        CONFIG.adminJwtSecret
+        || process.env.ADMIN_PASSWORD
+        || CONFIG.adminPassword,
+    );
 
-    const issueToken = () => crypto.randomBytes(24).toString('hex');
-    const authRequired = (req, res, next) => {
-        // 检查是否禁用了密码认证
-        if (store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
-            return next();
+    if (!allowDisablePasswordAuth && store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
+        store.setDisablePasswordAuth(false);
+        adminLogger.warn('password auth force-enabled in production mode');
+    }
+
+    const verifyToken = (rawToken) => {
+        const verified = verifyJwt(rawToken, signingSecret);
+        if (!verified.ok) return { ok: false, error: verified.error };
+        const jti = String((verified.payload && verified.payload.jti) || '');
+        if (!jti || revokedTokenIds.has(jti)) {
+            return { ok: false, error: 'token_revoked' };
         }
-        
+        return { ok: true, payload: verified.payload };
+    };
+
+    const authRequired = (req, res, next) => {
         const token = req.headers['x-admin-token'];
-        if (!token || !tokens.has(token)) {
+        const verified = verifyToken(token);
+        if (!verified.ok) {
             return res.status(401).json({ ok: false, error: 'Unauthorized' });
         }
         req.adminToken = token;
+        req.adminTokenPayload = verified.payload;
         next();
     };
 
+    const parsedAllowedOrigins = String(CONFIG.adminAllowedOrigins || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+    const allowAnyOrigin = process.env.NODE_ENV !== 'production' && parsedAllowedOrigins.length === 0;
+    const allowedOriginSet = new Set(parsedAllowedOrigins);
+
     app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
+        const origin = String(req.headers.origin || '').trim();
+        if (!origin) {
+            // same-origin / non-browser
+        } else if (allowAnyOrigin || allowedOriginSet.has(origin)) {
+            res.header('Access-Control-Allow-Origin', origin);
+            res.header('Vary', 'Origin');
+        } else {
+            return res.status(403).json({ ok: false, error: 'Origin not allowed' });
+        }
         res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
         res.header('Access-Control-Allow-Headers', 'Content-Type, x-account-id, x-admin-token');
         if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -138,8 +170,12 @@ function startAdminServer(dataProvider) {
         
         // 登录成功
         clearLoginAttempts(req.ip);
-        const token = issueToken();
-        tokens.add(token);
+        const issued = issueAdminToken({
+            secret: signingSecret,
+            ip: req.ip,
+            ttlSec: CONFIG.adminTokenTtlSec,
+        });
+        const token = issued.token;
         res.json({ ok: true, data: { token } });
     });
 
@@ -182,8 +218,19 @@ function startAdminServer(dataProvider) {
     // API: 设置密码认证状态
     app.post('/api/admin/toggle-password-auth', async (req, res) => {
         try {
+            if (!allowDisablePasswordAuth) {
+                return res.status(403).json({ ok: false, error: '生产环境不允许关闭密码认证' });
+            }
             const body = req.body || {};
+            const oldPassword = String(body.oldPassword || '');
             const disabled = Boolean(body.disabled);
+            const storedHash = store.getAdminPasswordHash ? store.getAdminPasswordHash() : '';
+            const ok = storedHash
+                ? await verifyPassword(oldPassword, storedHash)
+                : oldPassword === String(CONFIG.adminPassword || '');
+            if (!ok) {
+                return res.status(400).json({ ok: false, error: '原密码错误' });
+            }
             
             if (store.setDisablePasswordAuth) {
                 store.setDisablePasswordAuth(disabled);
@@ -199,13 +246,9 @@ function startAdminServer(dataProvider) {
     });
 
     app.get('/api/auth/validate', (req, res) => {
-        // 如果禁用了密码认证，直接返回有效
-        if (store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
-            return res.json({ ok: true, data: { valid: true, passwordDisabled: true } });
-        }
-        
         const token = String(req.headers['x-admin-token'] || '').trim();
-        const valid = !!token && tokens.has(token);
+        const verified = verifyToken(token);
+        const valid = !!token && verified.ok;
         if (!valid) {
             return res.status(401).json({ ok: false, data: { valid: false }, error: 'Unauthorized' });
         }
@@ -227,12 +270,13 @@ function startAdminServer(dataProvider) {
     });
 
     app.post('/api/logout', (req, res) => {
-        const token = req.adminToken;
-        if (token) {
-            tokens.delete(token);
+        const payload = req.adminTokenPayload || null;
+        const jti = payload && payload.jti ? String(payload.jti) : '';
+        if (jti) {
+            revokedTokenIds.add(jti);
             if (io) {
                 for (const socket of io.sockets.sockets.values()) {
-                    if (String(socket.data.adminToken || '') === String(token)) {
+                    if (String((socket.data.adminTokenPayload || {}).jti || '') === jti) {
                         socket.disconnect(true);
                     }
                 }
@@ -1046,10 +1090,12 @@ function startAdminServer(dataProvider) {
             ? String(socket.handshake.headers['x-admin-token'])
             : '';
         const token = authToken || headerToken;
-        if (!token || !tokens.has(token)) {
+        const verified = verifyToken(token);
+        if (!verified.ok) {
             return next(new Error('Unauthorized'));
         }
         socket.data.adminToken = token;
+        socket.data.adminTokenPayload = verified.payload;
         return next();
     });
 
