@@ -10,6 +10,9 @@ const {
     emitRealtimeLog,
     emitRealtimeAccountLog,
 } = require('./src/controllers/admin');
+const store = require('./src/models/store');
+const { CONFIG } = require('./src/config/config');
+const { shouldRefuseDefaultAdminPassword } = require('./src/services/startup-security');
 const { createRuntimeEngine } = require('./src/runtime/runtime-engine');
 const { createModuleLogger } = require('./src/services/logger');
 const mainLogger = createModuleLogger('main');
@@ -19,6 +22,16 @@ const isWorkerProcess = process.env.FARM_WORKER === '1';
 if (isWorkerProcess) {
     require('./src/core/worker');
 } else {
+    const hasPasswordHash = !!(store.getAdminPasswordHash && store.getAdminPasswordHash());
+    if (shouldRefuseDefaultAdminPassword({
+        nodeEnv: process.env.NODE_ENV,
+        hasPasswordHash,
+        adminPassword: CONFIG.adminPassword,
+    })) {
+        mainLogger.error('refuse to start with default admin password in production');
+        process.exit(1);
+    }
+
     const runtimeEngine = createRuntimeEngine({
         processRef: process,
         mainEntryPath: __filename,
