@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import api from '@/api'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
@@ -35,6 +35,45 @@ const passwordAuthLoading = ref(false)
 
 const token = computed(() => {
   return localStorage.getItem('admin_token') || '未登录'
+})
+
+const tokenVisible = ref(false)
+let tokenMaskTimer: ReturnType<typeof setTimeout> | null = null
+
+const maskedToken = computed(() => {
+  const raw = token.value
+  if (raw === '未登录')
+    return raw
+  if (tokenVisible.value)
+    return raw
+  if (raw.length <= 10)
+    return '*'.repeat(raw.length)
+  return `${raw.slice(0, 6)}${'*'.repeat(Math.max(4, raw.length - 10))}${raw.slice(-4)}`
+})
+
+function revealTokenTemporary() {
+  if (token.value === '未登录')
+    return
+  tokenVisible.value = true
+  if (tokenMaskTimer)
+    clearTimeout(tokenMaskTimer)
+  tokenMaskTimer = setTimeout(() => {
+    tokenVisible.value = false
+    tokenMaskTimer = null
+  }, 10000)
+}
+
+function hideToken() {
+  tokenVisible.value = false
+  if (tokenMaskTimer) {
+    clearTimeout(tokenMaskTimer)
+    tokenMaskTimer = null
+  }
+}
+
+onBeforeUnmount(() => {
+  if (tokenMaskTimer)
+    clearTimeout(tokenMaskTimer)
 })
 
 function copyToClipboard(text: string) {
@@ -1749,10 +1788,19 @@ async function handleTestOffline() {
           <div class="flex items-center gap-2">
             <input
               type="text"
-              :value="token"
+              :value="maskedToken"
               readonly
               class="flex-1 border border-gray-200 rounded-lg bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
             >
+            <BaseButton
+              v-if="token !== '未登录'"
+              variant="secondary"
+              size="sm"
+              @click="tokenVisible ? hideToken() : revealTokenTemporary()"
+            >
+              <div class="i-carbon-view mr-1" />
+              {{ tokenVisible ? '隐藏' : '显示10秒' }}
+            </BaseButton>
             <BaseButton
               v-if="token !== '未登录'"
               variant="secondary"
@@ -1764,7 +1812,7 @@ async function handleTestOffline() {
             </BaseButton>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400">
-            x-admin-token 用于API请求认证，复制后可用于第三方工具调用接口。
+            x-admin-token 用于API请求认证，默认已脱敏显示；点击“显示10秒”后会自动恢复隐藏。
           </p>
         </div>
       </div>

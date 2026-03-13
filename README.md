@@ -65,6 +65,21 @@
 - 源码运行：Node.js 20+，pnpm（推荐通过 `corepack enable` 启用）
 - 二进制发布版：无需安装 Node.js
 
+## 质量检查与测试
+
+```bash
+# 后端单元测试
+pnpm -C core test
+
+# 代码检查
+pnpm lint
+
+# 前端构建
+pnpm build:web
+```
+
+仓库已包含 GitHub Actions CI（`lint + test + build`）。
+
 ## 安装与启动（源码方式）
 
 ### Windows
