@@ -3,7 +3,75 @@
  */
 
 const axios = require('axios');
+const dns = require('node:dns').promises;
+const net = require('node:net');
 const pushoo = require('pushoo').default;
+
+function isPrivateIp(ip) {
+    if (!ip) return true;
+    const v4 = net.isIP(ip) === 4;
+    const v6 = net.isIP(ip) === 6;
+    if (!v4 && !v6) return true;
+    const lower = String(ip).toLowerCase();
+    if (v6) {
+        if (lower === '::1') return true;
+        if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+        if (lower.startsWith('fe80:')) return true;
+        if (lower.startsWith('::ffff:')) {
+            const tail = lower.replace('::ffff:', '');
+            return isPrivateIp(tail);
+        }
+        return false;
+    }
+    const [a, b] = lower.split('.').map(n => Number(n));
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    return false;
+}
+
+async function assertSafeOutboundEndpoint(endpoint, options = {}) {
+    const value = assertRequiredText('endpoint', endpoint);
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error('endpoint 非法');
+    }
+
+    const protocol = String(parsed.protocol || '').toLowerCase();
+    if (protocol !== 'https:') {
+        throw new Error('仅允许 https 推送地址');
+    }
+
+    const hostname = String(parsed.hostname || '').trim();
+    if (!hostname) throw new Error('endpoint 缺少主机名');
+
+    const allowPrivate = !!options.allowPrivateNetwork;
+    if (!allowPrivate) {
+        if (net.isIP(hostname) && isPrivateIp(hostname)) {
+            throw new Error('禁止访问内网/本地地址');
+        }
+        let addresses = [];
+        try {
+            addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+        } catch {
+            throw new Error('endpoint 域名解析失败');
+        }
+        if (!Array.isArray(addresses) || addresses.length === 0) {
+            throw new Error('endpoint 域名解析为空');
+        }
+        const hasPrivate = addresses.some(item => isPrivateIp(item && item.address));
+        if (hasPrivate) {
+            throw new Error('禁止访问内网/本地地址');
+        }
+    }
+
+    return parsed.toString();
+}
 
 function assertRequiredText(name, value) {
     const text = String(value || '').trim();
@@ -40,7 +108,7 @@ async function sendPushooMessage(payload = {}) {
 
     const options = {};
     if (channel === 'webhook') {
-        const url = assertRequiredText('endpoint', endpoint);
+        const url = await assertSafeOutboundEndpoint(endpoint);
         options.webhook = { url, method: 'POST' };
     }
 
@@ -89,7 +157,7 @@ function _recursiveReplace(obj, title, content) {
  */
 async function _sendCustomJsonMessage(payload) {
     try {
-        const endpoint = assertRequiredText('endpoint', payload.endpoint);
+        const endpoint = await assertSafeOutboundEndpoint(payload.endpoint);
         const title = payload.title || '';
         const content = payload.content || '';
 
@@ -124,4 +192,5 @@ async function _sendCustomJsonMessage(payload) {
 
 module.exports = {
     sendPushooMessage,
+    assertSafeOutboundEndpoint,
 };

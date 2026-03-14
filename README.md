@@ -65,6 +65,21 @@
 - 源码运行：Node.js 20+，pnpm（推荐通过 `corepack enable` 启用）
 - 二进制发布版：无需安装 Node.js
 
+## 质量检查与测试
+
+```bash
+# 后端单元测试
+pnpm -C core test
+
+# 代码检查
+pnpm lint
+
+# 前端构建
+pnpm build:web
+```
+
+仓库已包含 GitHub Actions CI（`lint + test + build`）。
+
 ## 安装与启动（源码方式）
 
 ### Windows
@@ -105,8 +120,11 @@ pnpm build:web
 # 3. 启动
 pnpm dev:core
 
-# （可选）设置管理密码后启动
-ADMIN_PASSWORD='你的强密码' pnpm dev:core
+# （推荐）设置管理密码/JWT密钥/CORS白名单后启动
+ADMIN_PASSWORD='你的强密码' \
+ADMIN_JWT_SECRET='请使用至少16位随机字符串' \
+ADMIN_ALLOWED_ORIGINS='https://your-panel.example.com' \
+pnpm dev:core
 ```
 
 启动后访问面板：
@@ -140,11 +158,14 @@ docker compose down
 
 ### 设置管理密码
 
-在 `docker-compose.yml` 的 `environment` 中配置：
+通过环境变量配置（必填）：
 
 ```yaml
 environment:
   ADMIN_PASSWORD: 你的强密码
+  ADMIN_JWT_SECRET: 至少16位随机字符串
+  # 可选：允许跨域来源，多个用逗号分隔
+  ADMIN_ALLOWED_ORIGINS: https://your-panel.example.com
 ```
 
 修改后执行 `docker compose up -d` 重启生效。
@@ -186,8 +207,9 @@ chmod +x ./qq-farm-bot-linux-x64 && ./qq-farm-bot-linux-x64
 ## 登录与安全
 
 - 面板首次访问需要登录
-- 默认管理密码：`admin`
-- **建议部署后立即修改为强密码**
+- 生产环境默认不允许使用 `admin` 弱密码启动
+- 请务必设置强密码与 JWT 密钥（`ADMIN_JWT_SECRET`，生产环境要求长度至少 16）
+- 建议配置 `ADMIN_ALLOWED_ORIGINS` 仅允许受信任来源
 
 ---
 

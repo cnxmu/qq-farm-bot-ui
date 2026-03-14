@@ -1,4 +1,3 @@
-const crypto = require('node:crypto');
 /**
  * 管理面板 HTTP 服务
  * 改写为接收 DataProvider 模式
@@ -28,9 +27,16 @@ const {
     recordLoginAttempts,
     clearLoginAttempts
 } = require('../services/security');
+const { buildSigningSecret, issueAdminToken, verifyJwt } = require('../services/auth-token');
+const { ApiError, sendApiError } = require('../services/api-error');
+const { sanitizeAccountPayload, parseImportGids } = require('../services/admin-validators');
 
 const hashPassword = (pwd) => secureHash(pwd); // 兼容旧接口
 const adminLogger = createModuleLogger('admin');
+
+const MAX_FRIEND_CACHE_TOTAL = 5000;
+const MAX_FRIEND_CACHE_IMPORT = 500;
+
 
 let app = null;
 let server = null;
@@ -68,25 +74,57 @@ function startAdminServer(dataProvider) {
     app = express();
     app.use(express.json());
 
-    const tokens = new Set();
+    const revokedTokenIds = new Set();
+    const allowDisablePasswordAuth = process.env.NODE_ENV !== 'production';
+    const signingSecret = buildSigningSecret(
+        CONFIG.adminJwtSecret
+        || process.env.ADMIN_PASSWORD
+        || CONFIG.adminPassword,
+    );
 
-    const issueToken = () => crypto.randomBytes(24).toString('hex');
-    const authRequired = (req, res, next) => {
-        // 检查是否禁用了密码认证
-        if (store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
-            return next();
+    if (!allowDisablePasswordAuth && store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
+        store.setDisablePasswordAuth(false);
+        adminLogger.warn('password auth force-enabled in production mode');
+    }
+
+    const verifyToken = (rawToken) => {
+        const verified = verifyJwt(rawToken, signingSecret);
+        if (!verified.ok) return { ok: false, error: verified.error };
+        const jti = String((verified.payload && verified.payload.jti) || '');
+        if (!jti || revokedTokenIds.has(jti)) {
+            return { ok: false, error: 'token_revoked' };
         }
-        
+        return { ok: true, payload: verified.payload };
+    };
+
+    const authRequired = (req, res, next) => {
         const token = req.headers['x-admin-token'];
-        if (!token || !tokens.has(token)) {
+        const verified = verifyToken(token);
+        if (!verified.ok) {
             return res.status(401).json({ ok: false, error: 'Unauthorized' });
         }
         req.adminToken = token;
+        req.adminTokenPayload = verified.payload;
         next();
     };
 
+    const parsedAllowedOrigins = String(CONFIG.adminAllowedOrigins || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+    const allowAnyOrigin = process.env.NODE_ENV !== 'production' && parsedAllowedOrigins.length === 0;
+    const allowedOriginSet = new Set(parsedAllowedOrigins);
+
     app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
+        const origin = String(req.headers.origin || '').trim();
+        if (!origin) {
+            // same-origin / non-browser
+        } else if (allowAnyOrigin || allowedOriginSet.has(origin)) {
+            res.header('Access-Control-Allow-Origin', origin);
+            res.header('Vary', 'Origin');
+        } else {
+            return res.status(403).json({ ok: false, error: 'Origin not allowed' });
+        }
         res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
         res.header('Access-Control-Allow-Headers', 'Content-Type, x-account-id, x-admin-token');
         if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -138,8 +176,12 @@ function startAdminServer(dataProvider) {
         
         // 登录成功
         clearLoginAttempts(req.ip);
-        const token = issueToken();
-        tokens.add(token);
+        const issued = issueAdminToken({
+            secret: signingSecret,
+            ip: req.ip,
+            ttlSec: CONFIG.adminTokenTtlSec,
+        });
+        const token = issued.token;
         res.json({ ok: true, data: { token } });
     });
 
@@ -175,22 +217,33 @@ function startAdminServer(dataProvider) {
             const disabled = store.getDisablePasswordAuth ? store.getDisablePasswordAuth() : false;
             res.json({ ok: true, data: { disabled } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 
     // API: 设置密码认证状态
     app.post('/api/admin/toggle-password-auth', async (req, res) => {
         try {
+            if (!allowDisablePasswordAuth) {
+                return res.status(403).json({ ok: false, error: '生产环境不允许关闭密码认证' });
+            }
             const body = req.body || {};
+            const oldPassword = String(body.oldPassword || '');
             const disabled = Boolean(body.disabled);
+            const storedHash = store.getAdminPasswordHash ? store.getAdminPasswordHash() : '';
+            const ok = storedHash
+                ? await verifyPassword(oldPassword, storedHash)
+                : oldPassword === String(CONFIG.adminPassword || '');
+            if (!ok) {
+                return res.status(400).json({ ok: false, error: '原密码错误' });
+            }
             
             if (store.setDisablePasswordAuth) {
                 store.setDisablePasswordAuth(disabled);
             }
             res.json({ ok: true, data: { disabled } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -199,13 +252,9 @@ function startAdminServer(dataProvider) {
     });
 
     app.get('/api/auth/validate', (req, res) => {
-        // 如果禁用了密码认证，直接返回有效
-        if (store.getDisablePasswordAuth && store.getDisablePasswordAuth()) {
-            return res.json({ ok: true, data: { valid: true, passwordDisabled: true } });
-        }
-        
         const token = String(req.headers['x-admin-token'] || '').trim();
-        const valid = !!token && tokens.has(token);
+        const verified = verifyToken(token);
+        const valid = !!token && verified.ok;
         if (!valid) {
             return res.status(401).json({ ok: false, data: { valid: false }, error: 'Unauthorized' });
         }
@@ -227,12 +276,13 @@ function startAdminServer(dataProvider) {
     });
 
     app.post('/api/logout', (req, res) => {
-        const token = req.adminToken;
-        if (token) {
-            tokens.delete(token);
+        const payload = req.adminTokenPayload || null;
+        const jti = payload && payload.jti ? String(payload.jti) : '';
+        if (jti) {
+            revokedTokenIds.add(jti);
             if (io) {
                 for (const socket of io.sockets.sockets.values()) {
-                    if (String(socket.data.adminToken || '') === String(token)) {
+                    if (String((socket.data.adminTokenPayload || {}).jti || '') === jti) {
                         socket.disconnect(true);
                     }
                 }
@@ -261,9 +311,18 @@ function startAdminServer(dataProvider) {
 
     function handleApiError(res, err) {
         if (isSoftRuntimeError(err)) {
-            return res.json({ ok: false, error: err.message });
+            return sendApiError(res, new ApiError(err.message, 409, 'RUNTIME_SOFT_ERROR'));
         }
-        return res.status(500).json({ ok: false, error: err.message });
+        return sendApiError(res, err);
+    }
+
+    function requireAccountId(req, res) {
+        const id = getAccId(req);
+        if (!id) {
+            sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
+            return '';
+        }
+        return id;
     }
 
     const resolveAccId = (rawRef) => {
@@ -286,8 +345,8 @@ function startAdminServer(dataProvider) {
 
     // API: 完整状态
     app.get('/api/status', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
 
         try {
             const data = provider.getStatus(id);
@@ -298,15 +357,13 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
     app.post('/api/automation', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) {
-            return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
-        }
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             let lastData = null;
             for (const [k, v] of Object.entries(req.body)) {
@@ -314,7 +371,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data: lastData || {} });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -345,7 +402,7 @@ function startAdminServer(dataProvider) {
     // API: 好友农田详情
     app.get('/api/interact-records', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             const data = await provider.getInteractRecords(id);
             res.json({ ok: true, data });
@@ -368,7 +425,7 @@ function startAdminServer(dataProvider) {
     // API: 对指定好友执行单次操作（偷菜/浇水/除草/捣乱）
     app.post('/api/friend/:gid/op', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             const opType = String((req.body || {}).opType || '');
             const data = await provider.doFriendOp(id, req.params.gid, opType);
@@ -381,7 +438,7 @@ function startAdminServer(dataProvider) {
     // API: 好友黑名单
     app.get('/api/friend-blacklist', async (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
             if (provider && typeof provider.getFriendBlacklist === 'function') {
                 const list = await provider.getFriendBlacklist(id);
@@ -416,8 +473,8 @@ function startAdminServer(dataProvider) {
 
     // API: 好友缓存
     app.get('/api/friend-cache', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const list = store.getFriendCache ? store.getFriendCache(id) : [];
             return res.json({ ok: true, data: Array.isArray(list) ? list : [] });
@@ -427,8 +484,8 @@ function startAdminServer(dataProvider) {
     });
 
     app.post('/api/friend-cache/update-from-visitors', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const friends = await provider.extractFriendsFromInteractRecords(id);
             if (!Array.isArray(friends) || friends.length === 0) {
@@ -446,22 +503,22 @@ function startAdminServer(dataProvider) {
 
     app.post('/api/friend-cache/import-gids', (req, res) => {
         const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
         try {
-            const input = req.body.gids;
-            let gids = [];
-            if (typeof input === 'string') {
-                gids = input.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
-            } else if (Array.isArray(input)) {
-                gids = input;
-            }
-            const validGids = gids
-                .map(g => Number(g))
-                .filter(g => Number.isFinite(g) && g > 0);
+            const { gids: validGids } = parseImportGids((req.body || {}).gids, {
+                maxImport: MAX_FRIEND_CACHE_IMPORT,
+            });
             if (validGids.length === 0) {
-                return res.json({ ok: false, error: '没有有效的 GID' });
+                return sendApiError(res, new ApiError('没有有效的 GID', 400, 'INVALID_GID_LIST'));
             }
-            const friends = validGids.map(gid => ({
+            const current = store.getFriendCache ? store.getFriendCache(id) : [];
+            const currentList = Array.isArray(current) ? current : [];
+            const availableSlots = Math.max(0, MAX_FRIEND_CACHE_TOTAL - currentList.length);
+            if (availableSlots <= 0) {
+                return sendApiError(res, new ApiError(`好友缓存已达上限(${MAX_FRIEND_CACHE_TOTAL})`, 400, 'FRIEND_CACHE_FULL'));
+            }
+            const gidsToImport = validGids.slice(0, availableSlots);
+            const friends = gidsToImport.map(gid => ({
                 gid,
                 nick: `GID:${gid}`,
                 avatarUrl: '',
@@ -470,15 +527,17 @@ function startAdminServer(dataProvider) {
             if (provider && typeof provider.broadcastConfig === 'function') {
                 provider.broadcastConfig(id);
             }
-            return res.json({ ok: true, data: saved, message: `已导入 ${validGids.length} 个 GID` });
+            const truncated = gidsToImport.length < validGids.length;
+            const suffix = truncated ? `，受总上限限制仅导入 ${gidsToImport.length} 个` : '';
+            return res.json({ ok: true, data: saved, message: `已导入 ${gidsToImport.length} 个 GID${suffix}` });
         } catch (e) {
             return handleApiError(res, e);
         }
     });
 
     app.delete('/api/friend-cache/:gid', (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         const gid = Number(req.params.gid);
         if (!gid || !Number.isFinite(gid)) {
             return res.status(400).json({ ok: false, error: '无效的 GID' });
@@ -597,15 +656,13 @@ function startAdminServer(dataProvider) {
 
     // API: 设置页统一保存（单次写入+单次广播）
     app.post('/api/settings/save', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) {
-            return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
-        }
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.saveSettings(id, req.body || {});
             res.json({ ok: true, data: data || {} });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -616,7 +673,7 @@ function startAdminServer(dataProvider) {
             const data = await provider.setUITheme(theme);
             res.json({ ok: true, data: data || {} });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -627,7 +684,7 @@ function startAdminServer(dataProvider) {
             const data = store.setOfflineReminder ? store.setOfflineReminder(body) : {};
             res.json({ ok: true, data: data || {} });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -638,7 +695,7 @@ function startAdminServer(dataProvider) {
             const data = store.setQrLoginConfig ? store.setQrLoginConfig(body) : { apiDomain: 'q.qq.com' };
             res.json({ ok: true, data: data || {} });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
     // API: 保存运行时连接/设备配置
@@ -675,10 +732,10 @@ function startAdminServer(dataProvider) {
             const custom_body = String(cfg.custom_body || '').trim();
 
             if (!channel) {
-                return res.status(400).json({ ok: false, error: '推送渠道不能为空' });
+                return sendApiError(res, new ApiError('推送渠道不能为空', 400, 'INVALID_PUSH_CHANNEL'));
             }
             if ((channel === 'webhook' || channel === 'custom_request') && !endpoint) {
-                return res.status(400).json({ ok: false, error: '接口地址不能为空' });
+                return sendApiError(res, new ApiError('接口地址不能为空', 400, 'INVALID_PUSH_ENDPOINT'));
             }
 
             const now = new Date();
@@ -694,11 +751,11 @@ function startAdminServer(dataProvider) {
             });
 
             if (!ret || !ret.ok) {
-                return res.status(400).json({ ok: false, error: (ret && ret.msg) || '推送失败', data: ret || {} });
+                return sendApiError(res, new ApiError((ret && ret.msg) || '推送失败', 400, 'PUSH_TEST_FAILED'));
             }
             return res.json({ ok: true, data: ret });
         } catch (e) {
-            return res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -774,7 +831,8 @@ function startAdminServer(dataProvider) {
             const body = (req.body && typeof req.body === 'object') ? req.body : {};
             const isUpdate = !!body.id;
             const resolvedUpdateId = isUpdate ? resolveAccId(body.id) : '';
-            const payload = isUpdate ? { ...body, id: resolvedUpdateId || String(body.id) } : { ...body };
+            const rawPayload = isUpdate ? { ...body, id: resolvedUpdateId || String(body.id) } : { ...body };
+            const payload = sanitizeAccountPayload(rawPayload, { isUpdate });
             let wasRunning = false;
             let oldAccount = null;
             if (isUpdate && provider.isAccountRunning) {
@@ -848,7 +906,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 
@@ -864,7 +922,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return sendApiError(res, e);
         }
     });
 
@@ -1046,10 +1104,12 @@ function startAdminServer(dataProvider) {
             ? String(socket.handshake.headers['x-admin-token'])
             : '';
         const token = authToken || headerToken;
-        if (!token || !tokens.has(token)) {
+        const verified = verifyToken(token);
+        if (!verified.ok) {
             return next(new Error('Unauthorized'));
         }
         socket.data.adminToken = token;
+        socket.data.adminTokenPayload = verified.payload;
         return next();
     });
 

@@ -62,7 +62,12 @@ function createDataProvider(options) {
             }
             if (!accountId) return [];
             const accId = String(accountId || '');
-            return filterLogs(globalLogs.filter(l => String(l.accountId || '') === accId), opts).slice(-max);
+            // 优先使用 worker 局部日志，避免每次请求全量扫描 globalLogs
+            const worker = workers[accId];
+            const sourceLogs = (worker && Array.isArray(worker.logs) && worker.logs.length > 0)
+                ? worker.logs
+                : globalLogs.filter(l => String(l.accountId || '') === accId);
+            return filterLogs(sourceLogs, opts).slice(-max);
         },
         clearLogs: (accountRef) => {
             const accountId = resolveAccountRefId(accountRef);
