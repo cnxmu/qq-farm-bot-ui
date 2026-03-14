@@ -168,6 +168,8 @@ environment:
   ADMIN_ALLOWED_ORIGINS: https://your-panel.example.com
   # 反向代理部署必须设置为可信代理策略
   ADMIN_TRUST_PROXY: loopback, linklocal, uniquelocal
+  # 可选：是否启用 token 与来源 IP 绑定（生产默认 1）
+  ADMIN_BIND_TOKEN_IP: 1
   # 可选：单写者约束，默认严格模式（建议保持 1）
   FARM_SINGLE_WRITER_STRICT: 1
   FARM_PERSIST_STRICT_CONFLICT: 1
@@ -215,6 +217,7 @@ chmod +x ./qq-farm-bot-linux-x64 && ./qq-farm-bot-linux-x64
 - 生产环境默认不允许使用 `admin` 弱密码启动
 - 请务必设置强密码与 JWT 密钥（`ADMIN_JWT_SECRET`，生产环境要求长度至少 16）
 - 建议配置 `ADMIN_ALLOWED_ORIGINS` 仅允许受信任来源
+- 二维码登录接口（`/api/qr/create`、`/api/qr/check`）已纳入管理员鉴权，需携带 `x-admin-token`
 
 ### 持久化并发边界（硬限制）
 
@@ -232,7 +235,7 @@ chmod +x ./qq-farm-bot-linux-x64 && ./qq-farm-bot-linux-x64
 - 副本数固定为 1
 - `FARM_SINGLE_WRITER_STRICT=1`
 - `FARM_PERSIST_STRICT_CONFLICT=1`
-- `ADMIN_TRUST_PROXY` 已按实际反向代理拓扑设置
+- `ADMIN_TRUST_PROXY` 已按实际反向代理拓扑设置（生产环境禁止 `ADMIN_TRUST_PROXY=true`）
 
 ---
 

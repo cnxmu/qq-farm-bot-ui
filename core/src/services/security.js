@@ -1,6 +1,6 @@
 /**
  * 安全模块 - 密码加密与验证
- * 使用bcrypt替代SHA256，增强密码安全性
+ * 使用 PBKDF2（保留 SHA256 兼容分支）增强密码安全性
  */
 
 const crypto = require('node:crypto');
@@ -10,7 +10,7 @@ const logger = createModuleLogger('security');
 
 // 配置
 const SECURITY_CONFIG = {
-    saltRounds: 12,           // bcrypt cost factor (4-31)
+    pbkdf2Iterations: 100000, // PBKDF2 iterations
     minPasswordLength: 4,
     maxPasswordLength: 64,
     enablePasswordStrengthCheck: true,
@@ -36,7 +36,7 @@ async function hashPassword(password) {
     }
 
     const salt = generateSalt();
-    const iterations = 100000;
+    const iterations = SECURITY_CONFIG.pbkdf2Iterations;
     const keyLength = 64;
     const digest = 'sha512';
     
@@ -223,8 +223,9 @@ function passwordHashMiddleware(req, res, next) {
         if (!strength.valid) {
             return res.status(400).json({
                 ok: false,
-                error: strength.feedback[0],
-                feedback: strength.feedback
+                message: strength.feedback[0],
+                code: 'INVALID_PASSWORD',
+                details: { feedback: strength.feedback }
             });
         }
     }
@@ -235,11 +236,23 @@ function passwordHashMiddleware(req, res, next) {
 // 速率限制中间件
 const rateLimitStore = new Map();
 
+function buildRequestRateLimitKey(req, options = {}) {
+    const ip = String((req && req.ip) || "").trim().toLowerCase();
+    const forwarded = String((req && req.headers && req.headers['x-forwarded-for']) || "").split(',')[0].trim().toLowerCase();
+    const ua = String((req && req.headers && req.headers['user-agent']) || "").trim().toLowerCase();
+    const includeForwarded = options.includeForwarded !== false;
+    const includeUserAgent = options.includeUserAgent !== false;
+    const parts = [ip || "unknown-ip"];
+    if (includeForwarded) parts.push(forwarded || "no-xff");
+    if (includeUserAgent) parts.push(ua || "no-ua");
+    return parts.join('|');
+}
+
 function rateLimitMiddleware(options = {}) {
     const {
         windowMs = 60000,  // 时间窗口
         maxRequests = 100, // 最大请求数
-        keyGenerator = (req) => req.ip,
+        keyGenerator = (req) => buildRequestRateLimitKey(req),
     } = options;
 
     return (req, res, next) => {
@@ -265,7 +278,8 @@ function rateLimitMiddleware(options = {}) {
         if (record.count > maxRequests) {
             return res.status(429).json({
                 ok: false,
-                error: '请求过于频繁，请稍后重试',
+                message: '请求过于频繁，请稍后重试',
+                code: 'RATE_LIMITED',
                 retryAfter: Math.ceil((record.resetAt - now) / 1000)
             });
         }
@@ -295,5 +309,6 @@ module.exports = {
     verifySessionToken,
     passwordHashMiddleware,
     rateLimitMiddleware,
+    buildRequestRateLimitKey,
     SECURITY_CONFIG,
 };

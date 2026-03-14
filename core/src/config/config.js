@@ -20,6 +20,9 @@ const CONFIG = {
     adminJwtSecret: process.env.ADMIN_JWT_SECRET || '',
     adminTokenTtlSec: Math.max(300, Number(process.env.ADMIN_TOKEN_TTL_SEC) || 86400),
     adminAllowedOrigins: String(process.env.ADMIN_ALLOWED_ORIGINS || '').trim(),
+    adminBindTokenIp: process.env.ADMIN_BIND_TOKEN_IP === undefined
+        ? (String(process.env.NODE_ENV || '').toLowerCase() === 'production')
+        : process.env.ADMIN_BIND_TOKEN_IP !== '0',
     device_info: {
         client_version: "1.7.0.5_20260306",
         sys_software: 'iOS 26.2.1',

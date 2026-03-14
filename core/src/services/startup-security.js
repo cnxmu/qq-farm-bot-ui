@@ -10,6 +10,19 @@ function shouldRefuseDefaultAdminPassword(options = {}) {
     return isProduction && !hasPasswordHash && usingDefaultPassword;
 }
 
+
+function shouldRefuseUnsafeTrustProxy(options = {}) {
+    const {
+        nodeEnv = '',
+        trustProxy = '',
+    } = options;
+
+    const isProduction = String(nodeEnv || '').toLowerCase() === 'production';
+    const value = String(trustProxy || '').trim().toLowerCase();
+    // express trust proxy=true trusts all upstream proxies and allows spoofed client ip.
+    return isProduction && value === 'true';
+}
+
 function shouldRefuseWeakJwtSecret(options = {}) {
     const {
         nodeEnv = '',
@@ -24,4 +37,5 @@ function shouldRefuseWeakJwtSecret(options = {}) {
 module.exports = {
     shouldRefuseDefaultAdminPassword,
     shouldRefuseWeakJwtSecret,
+    shouldRefuseUnsafeTrustProxy,
 };

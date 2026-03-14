@@ -46,6 +46,17 @@ function verifyJwt(token, secret) {
     const parts = raw.split('.');
     if (parts.length !== 3) return { ok: false, error: 'malformed_token' };
     const [h, p, s] = parts;
+
+    let header;
+    try {
+        header = JSON.parse(base64UrlDecode(h));
+    } catch {
+        return { ok: false, error: 'invalid_header' };
+    }
+    if (!header || header.alg !== 'HS256' || header.typ !== 'JWT') {
+        return { ok: false, error: 'invalid_header' };
+    }
+
     const body = `${h}.${p}`;
     const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('base64')
         .replace(/=/g, '')

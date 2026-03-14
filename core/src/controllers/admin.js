@@ -25,11 +25,13 @@ const {
     verifyPassword,
     rateLimitMiddleware,
     recordLoginAttempts,
-    clearLoginAttempts
+    clearLoginAttempts,
+    buildRequestRateLimitKey
 } = require('../services/security');
 const { buildSigningSecret, issueAdminToken, verifyJwt } = require('../services/auth-token');
 const { ApiError, sendApiError } = require('../services/api-error');
 const { sanitizeAccountPayload, parseImportGids } = require('../services/admin-validators');
+const { registerQrRoutes } = require('./admin-qr-routes');
 
 const hashPassword = (pwd) => secureHash(pwd); // 兼容旧接口
 const adminLogger = createModuleLogger('admin');
@@ -124,7 +126,10 @@ function startAdminServer(dataProvider) {
     provider = dataProvider;
 
     app = express();
-    const trustProxy = String(process.env.ADMIN_TRUST_PROXY || 'loopback, linklocal, uniquelocal').trim();
+    const trustProxyRaw = String(process.env.ADMIN_TRUST_PROXY || 'loopback, linklocal, uniquelocal').trim();
+    const trustProxy = /^(?:true|false)$/i.test(trustProxyRaw)
+        ? trustProxyRaw.toLowerCase() === 'true'
+        : trustProxyRaw;
     app.set('trust proxy', trustProxy);
     app.use(express.json());
 
@@ -141,7 +146,7 @@ function startAdminServer(dataProvider) {
         adminLogger.warn('password auth force-enabled in production mode');
     }
 
-    const verifyToken = (rawToken) => {
+    const verifyToken = (rawToken, requestIp = '') => {
         const nowSec = Math.floor(Date.now() / 1000);
         for (const [id, exp] of revokedTokenIds.entries()) {
             if (!Number.isFinite(exp) || exp <= nowSec) revokedTokenIds.delete(id);
@@ -151,6 +156,13 @@ function startAdminServer(dataProvider) {
         const jti = String((verified.payload && verified.payload.jti) || '');
         if (!jti || revokedTokenIds.has(jti)) {
             return { ok: false, error: 'token_revoked' };
+        }
+        if (CONFIG.adminBindTokenIp) {
+            const issuedIp = String((verified.payload && verified.payload.ip) || '').trim();
+            const currentIp = String(requestIp || '').trim();
+            if (issuedIp && currentIp && issuedIp !== currentIp) {
+                return { ok: false, error: 'token_ip_mismatch' };
+            }
         }
         return { ok: true, payload: verified.payload };
     };
@@ -165,7 +177,7 @@ function startAdminServer(dataProvider) {
 
     const authRequired = (req, res, next) => {
         const token = req.headers['x-admin-token'];
-        const verified = verifyToken(token);
+        const verified = verifyToken(token, req.ip);
         if (!verified.ok) {
             return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED'));
         }
@@ -201,7 +213,7 @@ function startAdminServer(dataProvider) {
     app.use('/api', rateLimitMiddleware({
         windowMs: 60000,  // 1分钟
         maxRequests: 100, // 最多100次
-        keyGenerator: (req) => req.ip,
+        keyGenerator: (req) => buildRequestRateLimitKey(req),
     }));
 
     const webDist = path.join(__dirname, '../../../web/dist');
@@ -219,7 +231,7 @@ function startAdminServer(dataProvider) {
         
         // 记录登录尝试
         try {
-            recordLoginAttempts(req.ip);
+            recordLoginAttempts(buildRequestRateLimitKey(req));
         } catch (error) {
             return sendApiError(res, new ApiError(error.message, 429, 'RATE_LIMITED'));
         }
@@ -241,7 +253,7 @@ function startAdminServer(dataProvider) {
         }
         
         // 登录成功
-        clearLoginAttempts(req.ip);
+        clearLoginAttempts(buildRequestRateLimitKey(req));
         const issued = issueAdminToken({
             secret: signingSecret,
             ip: req.ip,
@@ -252,7 +264,7 @@ function startAdminServer(dataProvider) {
     });
 
     app.use('/api', (req, res, next) => {
-        if (req.path === '/login' || req.path === '/qr/create' || req.path === '/qr/check' || req.path === '/auth/validate' || req.path === '/admin/password-auth-status') return next();
+        if (req.path === '/login' || req.path === '/auth/validate' || req.path === '/admin/password-auth-status') return next();
         return authRequired(req, res, next);
     });
 
@@ -319,7 +331,7 @@ function startAdminServer(dataProvider) {
 
     app.get('/api/auth/validate', (req, res) => {
         const token = String(req.headers['x-admin-token'] || '').trim();
-        const verified = verifyToken(token);
+        const verified = verifyToken(token, req.ip);
         const valid = !!token && verified.ok;
         if (!valid) {
             return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED', { valid: false }));
@@ -1053,53 +1065,15 @@ function startAdminServer(dataProvider) {
         }
     });
 
-    // ============ QR Code Login APIs (无需账号选择) ============
-    // 这些接口不需要 authRequired 也能调用（用于登录流程）
-    app.post('/api/qr/create', async (req, res) => {
-        try {
-            const qrLogin = store.getQrLoginConfig ? store.getQrLoginConfig() : { apiDomain: 'q.qq.com' };
-            const result = await MiniProgramLoginSession.requestLoginCode({ apiDomain: qrLogin.apiDomain });
-            res.json({ ok: true, data: result });
-        } catch (e) {
-            return handleApiError(res, e);
-        }
+    registerQrRoutes({
+        app,
+        store,
+        MiniProgramLoginSession,
+        handleApiError,
+        sendApiError,
+        ApiError,
     });
 
-    app.post('/api/qr/check', async (req, res) => {
-        const { code } = req.body || {};
-        if (!code) {
-            return sendApiError(res, new ApiError('Missing code', 400, 'MISSING_CODE'));
-        }
-
-        try {
-            const qrLogin = store.getQrLoginConfig ? store.getQrLoginConfig() : { apiDomain: 'q.qq.com' };
-            const result = await MiniProgramLoginSession.queryStatus(code, { apiDomain: qrLogin.apiDomain });
-
-            if (result.status === 'OK') {
-                const ticket = result.ticket;
-                const uin = result.uin || '';
-                const nickname = result.nickname || ''; // 获取昵称
-                const appid = '1112386029'; // Farm appid
-
-                const authCode = await MiniProgramLoginSession.getAuthCode(ticket, appid, { apiDomain: qrLogin.apiDomain });
-
-                let avatar = '';
-                if (uin) {
-                    avatar = `https://q1.qlogo.cn/g?b=qq&nk=${uin}&s=640`;
-                }
-
-                res.json({ ok: true, data: { status: 'OK', code: authCode, uin, avatar, nickname } });
-            } else if (result.status === 'Used') {
-                res.json({ ok: true, data: { status: 'Used' } });
-            } else if (result.status === 'Wait') {
-                res.json({ ok: true, data: { status: 'Wait' } });
-            } else {
-                res.json({ ok: true, data: { status: 'Error', error: result.msg } });
-            }
-        } catch (e) {
-            return handleApiError(res, e);
-        }
-    });
 
     app.get('*', (req, res) => {
         if (req.path.startsWith('/api') || req.path.startsWith('/game-config')) {
@@ -1182,7 +1156,7 @@ function startAdminServer(dataProvider) {
             ? String(socket.handshake.headers['x-admin-token'])
             : '';
         const token = authToken || headerToken;
-        const verified = verifyToken(token);
+        const verified = verifyToken(token, socket.handshake.address || '');
         if (!verified.ok) {
             return next(new Error('Unauthorized'));
         }

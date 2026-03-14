@@ -48,3 +48,14 @@ test('json-db atomic write acquires lock and persists content', () => {
     assert.equal(text, '{"ok":true}');
     assert.equal(fs.existsSync(`${filePath}.lock`), false);
 });
+
+
+test('security middleware uses unified message/code payload instead of legacy error field', () => {
+    const file = path.join(__dirname, '../src/services/security.js');
+    const content = fs.readFileSync(file, 'utf8');
+    assert.equal(content.includes("error: strength.feedback[0]"), false);
+    assert.equal(content.includes("error: '请求过于频繁，请稍后重试'"), false);
+    assert.equal(content.includes("message: strength.feedback[0]"), true);
+    assert.equal(content.includes("code: 'RATE_LIMITED'"), true);
+});
+

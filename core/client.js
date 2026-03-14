@@ -12,7 +12,7 @@ const {
 } = require('./src/controllers/admin');
 const store = require('./src/models/store');
 const { CONFIG } = require('./src/config/config');
-const { shouldRefuseDefaultAdminPassword, shouldRefuseWeakJwtSecret } = require('./src/services/startup-security');
+const { shouldRefuseDefaultAdminPassword, shouldRefuseWeakJwtSecret, shouldRefuseUnsafeTrustProxy } = require('./src/services/startup-security');
 const { ensureDataDir } = require('./src/config/runtime-paths');
 const { acquireSingleWriterLease } = require('./src/services/single-writer-lock');
 const { createRuntimeEngine } = require('./src/runtime/runtime-engine');
@@ -53,6 +53,14 @@ if (isWorkerProcess) {
         adminJwtSecret: CONFIG.adminJwtSecret,
     })) {
         mainLogger.error('refuse to start with weak ADMIN_JWT_SECRET in production (must be >=16 chars)');
+        process.exit(1);
+    }
+
+    if (shouldRefuseUnsafeTrustProxy({
+        nodeEnv: process.env.NODE_ENV,
+        trustProxy: process.env.ADMIN_TRUST_PROXY || 'loopback, linklocal, uniquelocal',
+    })) {
+        mainLogger.error('refuse to start with unsafe ADMIN_TRUST_PROXY=true in production');
         process.exit(1);
     }
 

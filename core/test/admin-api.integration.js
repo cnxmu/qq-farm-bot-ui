@@ -40,12 +40,12 @@ function createProvider() {
     };
 }
 
-async function login(port) {
+async function login(port, headers = {}) {
     const res = await requestJson({
         method: 'POST',
         port,
         path: '/api/login',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify({ password: CONFIG.adminPassword }),
     });
     assert.equal(res.status, 200);
@@ -56,10 +56,14 @@ async function login(port) {
 async function main() {
     const oldPort = CONFIG.adminPort;
     const oldOrigins = CONFIG.adminAllowedOrigins;
+    const oldBindIp = CONFIG.adminBindTokenIp;
     const oldEnv = process.env.NODE_ENV;
+    const oldTrustProxy = process.env.ADMIN_TRUST_PROXY;
     CONFIG.adminPort = 3911;
     CONFIG.adminAllowedOrigins = 'http://allowed.local';
     process.env.NODE_ENV = 'production';
+    process.env.ADMIN_TRUST_PROXY = 'true';
+    CONFIG.adminBindTokenIp = true;
 
     await stopAdminServer();
     startAdminServer(createProvider());
@@ -71,8 +75,23 @@ async function main() {
     assert.equal(typeof unauthorized.data.message, 'string');
     assert.equal(unauthorized.data.error, undefined);
 
-    const token = await login(3911);
-    const accountLogs = await requestJson({ port: 3911, path: '/api/account-logs?limit=5', headers: { 'x-admin-token': token } });
+    const token = await login(3911, { 'x-forwarded-for': '1.1.1.1' });
+    const authHeaders = { 'x-admin-token': token, 'x-forwarded-for': '1.1.1.1' };
+
+    const qrUnauthorized = await requestJson({ method: 'POST', port: 3911, path: '/api/qr/create', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(qrUnauthorized.status, 401);
+    assert.equal(qrUnauthorized.data.ok, false);
+
+
+    const ipMismatch = await requestJson({
+        port: 3911,
+        path: '/api/status',
+        headers: { 'x-account-id': '1', 'x-admin-token': token, 'x-forwarded-for': '2.2.2.2' },
+    });
+    assert.equal(ipMismatch.status, 401);
+    assert.equal(ipMismatch.data.ok, false);
+
+    const accountLogs = await requestJson({ port: 3911, path: '/api/account-logs?limit=5', headers: authHeaders });
     assert.equal(accountLogs.status, 200);
     assert.equal(accountLogs.data.ok, true);
     assert.ok(Array.isArray(accountLogs.data.data));
@@ -84,7 +103,7 @@ async function main() {
             method: 'POST',
             port: 3911,
             path: '/api/friend-blacklist/toggle',
-            headers: { 'content-type': 'application/json', 'x-admin-token': token, 'x-account-id': '1' },
+            headers: { 'content-type': 'application/json', ...authHeaders, 'x-account-id': '1' },
             body: JSON.stringify({ gid: 123 }),
         });
         assert.equal(toggled.status, 500);
@@ -105,7 +124,9 @@ async function main() {
     await stopAdminServer();
     CONFIG.adminPort = oldPort;
     CONFIG.adminAllowedOrigins = oldOrigins;
+    CONFIG.adminBindTokenIp = oldBindIp;
     process.env.NODE_ENV = oldEnv;
+    process.env.ADMIN_TRUST_PROXY = oldTrustProxy;
 }
 
 main().then(() => {
