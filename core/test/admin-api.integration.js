@@ -65,8 +65,13 @@ async function main() {
     process.env.ADMIN_TRUST_PROXY = 'true';
     CONFIG.adminBindTokenIp = true;
 
+
     await stopAdminServer();
     startAdminServer(createProvider());
+
+    const health = await requestJson({ port: 3911, path: '/healthz' });
+    assert.equal(health.status, 200);
+    assert.equal(health.data.ok, true);
 
     const unauthorized = await requestJson({ port: 3911, path: '/api/status', headers: { 'x-account-id': '1' } });
     assert.equal(unauthorized.status, 401);

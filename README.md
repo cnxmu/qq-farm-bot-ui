@@ -177,6 +177,8 @@ environment:
 
 修改后执行 `docker compose up -d` 重启生效。
 
+容器健康检查使用 `GET /healthz`（无需鉴权）。
+
 ---
 
 

@@ -1,4 +1,17 @@
 
+2026-03-14 安全与部署修复
+后端：
+  - 新增 /healthz 健康检查接口（无需鉴权）用于容器存活探测
+  - /api/auth/validate 修复 passwordDisabled 返回逻辑（开发环境可正确反映）
+  - JSON 请求体增加大小限制（256kb），降低大包 DoS 风险
+  - PBKDF2 密码校验改为 timingSafeEqual 比较，减少侧信道风险
+部署：
+  - docker-compose 新增 healthcheck
+  - core/Dockerfile 新增 HEALTHCHECK
+文档：
+  - README 与 部署教程补充健康检查说明与验证命令
+
+
 
 2026-03-14 文档更新
 文档：

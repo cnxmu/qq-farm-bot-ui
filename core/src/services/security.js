@@ -78,7 +78,10 @@ async function verifyPassword(password, storedHash) {
                         logger.error('PBKDF2验证失败', { error: err.message });
                         resolve(false);
                     } else {
-                        resolve(derivedKey.toString('hex') === hash);
+                        const actual = derivedKey.toString('hex');
+                        const expected = String(hash || '');
+                        if (actual.length !== expected.length) return resolve(false);
+                        resolve(crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected)));
                     }
                 });
             });

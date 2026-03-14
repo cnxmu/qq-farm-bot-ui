@@ -131,7 +131,7 @@ function startAdminServer(dataProvider) {
         ? trustProxyRaw.toLowerCase() === 'true'
         : trustProxyRaw;
     app.set('trust proxy', trustProxy);
-    app.use(express.json());
+    app.use(express.json({ limit: '256kb' }));
 
     const revokedTokenIds = new Map(); // jti -> exp(sec)
     const allowDisablePasswordAuth = process.env.NODE_ENV !== 'production';
@@ -224,6 +224,10 @@ function startAdminServer(dataProvider) {
         app.get('/', (req, res) => res.send('web build not found. Please build the web project.'));
     }
     app.use('/game-config', express.static(getResourcePath('gameConfig')));
+
+    app.get('/healthz', (req, res) => {
+        res.json({ ok: true, ts: Date.now() });
+    });
 
     // 登录与鉴权
     app.post('/api/login', async (req, res) => {
@@ -330,11 +334,16 @@ function startAdminServer(dataProvider) {
     });
 
     app.get('/api/auth/validate', (req, res) => {
+        const passwordDisabled = !!(store.getDisablePasswordAuth && store.getDisablePasswordAuth());
+        if (allowDisablePasswordAuth && passwordDisabled) {
+            return res.json({ ok: true, data: { valid: true, passwordDisabled: true } });
+        }
+
         const token = String(req.headers['x-admin-token'] || '').trim();
         const verified = verifyToken(token, req.ip);
         const valid = !!token && verified.ok;
         if (!valid) {
-            return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED', { valid: false }));
+            return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED', { valid: false, passwordDisabled: false }));
         }
         res.json({ ok: true, data: { valid: true, passwordDisabled: false } });
     });
