@@ -101,7 +101,7 @@ function startAdminServer(dataProvider) {
         const token = req.headers['x-admin-token'];
         const verified = verifyToken(token);
         if (!verified.ok) {
-            return res.status(401).json({ ok: false, error: 'Unauthorized' });
+            return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED'));
         }
         req.adminToken = token;
         req.adminTokenPayload = verified.payload;
@@ -123,7 +123,7 @@ function startAdminServer(dataProvider) {
             res.header('Access-Control-Allow-Origin', origin);
             res.header('Vary', 'Origin');
         } else {
-            return res.status(403).json({ ok: false, error: 'Origin not allowed' });
+            return sendApiError(res, new ApiError('Origin not allowed', 403, 'ORIGIN_NOT_ALLOWED'));
         }
         res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
         res.header('Access-Control-Allow-Headers', 'Content-Type, x-account-id, x-admin-token');
@@ -155,7 +155,7 @@ function startAdminServer(dataProvider) {
         try {
             recordLoginAttempts(req.ip);
         } catch (error) {
-            return res.status(429).json({ ok: false, error: error.message });
+            return sendApiError(res, new ApiError(error.message, 429, 'RATE_LIMITED'));
         }
         
         const input = String(password || '');
@@ -171,7 +171,7 @@ function startAdminServer(dataProvider) {
         }
         
         if (!ok) {
-            return res.status(401).json({ ok: false, error: 'Invalid password' });
+            return sendApiError(res, new ApiError('Invalid password', 401, 'INVALID_PASSWORD'));
         }
         
         // 登录成功
@@ -195,14 +195,14 @@ function startAdminServer(dataProvider) {
         const oldPassword = String(body.oldPassword || '');
         const newPassword = String(body.newPassword || '');
         if (newPassword.length < 4) {
-            return res.status(400).json({ ok: false, error: '新密码长度至少为 4 位' });
+            return sendApiError(res, new ApiError('新密码长度至少为 4 位', 400, 'INVALID_PASSWORD_LENGTH'));
         }
         const storedHash = store.getAdminPasswordHash ? store.getAdminPasswordHash() : '';
         const ok = storedHash
             ? await verifyPassword(oldPassword, storedHash)
             : oldPassword === String(CONFIG.adminPassword || '');
         if (!ok) {
-            return res.status(400).json({ ok: false, error: '原密码错误' });
+            return sendApiError(res, new ApiError('原密码错误', 400, 'INVALID_OLD_PASSWORD'));
         }
         const nextHash = await hashPassword(newPassword);
         if (store.setAdminPasswordHash) {
@@ -225,7 +225,7 @@ function startAdminServer(dataProvider) {
     app.post('/api/admin/toggle-password-auth', async (req, res) => {
         try {
             if (!allowDisablePasswordAuth) {
-                return res.status(403).json({ ok: false, error: '生产环境不允许关闭密码认证' });
+                return sendApiError(res, new ApiError('生产环境不允许关闭密码认证', 403, 'PASSWORD_AUTH_LOCKED'));
             }
             const body = req.body || {};
             const oldPassword = String(body.oldPassword || '');
@@ -235,7 +235,7 @@ function startAdminServer(dataProvider) {
                 ? await verifyPassword(oldPassword, storedHash)
                 : oldPassword === String(CONFIG.adminPassword || '');
             if (!ok) {
-                return res.status(400).json({ ok: false, error: '原密码错误' });
+                return sendApiError(res, new ApiError('原密码错误', 400, 'INVALID_OLD_PASSWORD'));
             }
             
             if (store.setDisablePasswordAuth) {
@@ -256,7 +256,7 @@ function startAdminServer(dataProvider) {
         const verified = verifyToken(token);
         const valid = !!token && verified.ok;
         if (!valid) {
-            return res.status(401).json({ ok: false, data: { valid: false }, error: 'Unauthorized' });
+            return sendApiError(res, new ApiError('Unauthorized', 401, 'UNAUTHORIZED', { valid: false }));
         }
         res.json({ ok: true, data: { valid: true, passwordDisabled: false } });
     });
@@ -377,68 +377,68 @@ function startAdminServer(dataProvider) {
 
     // API: 农田详情
     app.get('/api/lands', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getLands(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 好友列表
     app.get('/api/friends', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getFriends(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 好友农田详情
     app.get('/api/interact-records', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getInteractRecords(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     app.get('/api/friend/:gid/lands', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getFriendLands(id, req.params.gid);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 对指定好友执行单次操作（偷菜/浇水/除草/捣乱）
     app.post('/api/friend/:gid/op', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const opType = String((req.body || {}).opType || '');
             const data = await provider.doFriendOp(id, req.params.gid, opType);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 好友黑名单
     app.get('/api/friend-blacklist', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return sendApiError(res, new ApiError('Missing x-account-id', 400, 'MISSING_ACCOUNT_ID'));
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             if (provider && typeof provider.getFriendBlacklist === 'function') {
                 const list = await provider.getFriendBlacklist(id);
@@ -452,10 +452,10 @@ function startAdminServer(dataProvider) {
     });
 
     app.post('/api/friend-blacklist/toggle', (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         const gid = Number((req.body || {}).gid);
-        if (!gid) return res.status(400).json({ ok: false, error: 'Missing gid' });
+        if (!gid) return sendApiError(res, new ApiError('Missing gid', 400, 'MISSING_GID'));
         const current = store.getFriendBlacklist ? store.getFriendBlacklist(id) : [];
         let next;
         if (current.includes(gid)) {
@@ -540,7 +540,7 @@ function startAdminServer(dataProvider) {
         if (!id) return;
         const gid = Number(req.params.gid);
         if (!gid || !Number.isFinite(gid)) {
-            return res.status(400).json({ ok: false, error: '无效的 GID' });
+            return sendApiError(res, new ApiError('无效的 GID', 400, 'INVALID_GID'));
         }
         try {
             const current = store.getFriendCache ? store.getFriendCache(id) : [];
@@ -557,49 +557,49 @@ function startAdminServer(dataProvider) {
 
     // API: 种子列表
     app.get('/api/seeds', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getSeeds(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 背包物品
     app.get('/api/bag', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getBag(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 背包种子列表
     app.get('/api/bag/seeds', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getBagSeeds(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
     // API: 每日礼包状态总览
     app.get('/api/daily-gifts', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const data = await provider.getDailyGifts(id);
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
@@ -608,11 +608,11 @@ function startAdminServer(dataProvider) {
         try {
             const ok = provider.startAccount(resolveAccId(req.params.id));
             if (!ok) {
-                return res.status(404).json({ ok: false, error: 'Account not found' });
+                return sendApiError(res, new ApiError('Account not found', 404, 'ACCOUNT_NOT_FOUND'));
             }
             res.json({ ok: true });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -621,24 +621,24 @@ function startAdminServer(dataProvider) {
         try {
             const ok = provider.stopAccount(resolveAccId(req.params.id));
             if (!ok) {
-                return res.status(404).json({ ok: false, error: 'Account not found' });
+                return sendApiError(res, new ApiError('Account not found', 404, 'ACCOUNT_NOT_FOUND'));
             }
             res.json({ ok: true });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
     // API: 农场一键操作
     app.post('/api/farm/operate', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false });
+        const id = requireAccountId(req, res);
+        if (!id) return;
         try {
             const { opType } = req.body; // 'harvest', 'clear', 'plant', 'all'
             await provider.doFarmOp(id, opType);
             res.json({ ok: true });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
@@ -650,7 +650,7 @@ function startAdminServer(dataProvider) {
             const data = getPlantRankings(sortBy);
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -712,7 +712,7 @@ function startAdminServer(dataProvider) {
             }
             return res.json({ ok: true, data: { runtimeClient: saved } });
         } catch (e) {
-            return res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -782,7 +782,7 @@ function startAdminServer(dataProvider) {
                 : null;
             res.json({ ok: true, data: { intervals, strategy, preferredSeed, bagSeedPriority, friendQuietHours, automation, ui, offlineReminder, qrLogin, runtimeClient } });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -792,7 +792,7 @@ function startAdminServer(dataProvider) {
             const data = provider.getAccounts();
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -804,12 +804,12 @@ function startAdminServer(dataProvider) {
             const accountList = getAccountList();
             const target = findAccountByRef(accountList, rawRef);
             if (!target || !target.id) {
-                return res.status(404).json({ ok: false, error: 'Account not found' });
+                return sendApiError(res, new ApiError('Account not found', 404, 'ACCOUNT_NOT_FOUND'));
             }
 
             const remark = String(body.remark !== undefined ? body.remark : body.name || '').trim();
             if (!remark) {
-                return res.status(400).json({ ok: false, error: 'Missing remark' });
+                return sendApiError(res, new ApiError('Missing remark', 400, 'MISSING_REMARK'));
             }
 
             const accountId = String(target.id);
@@ -822,7 +822,7 @@ function startAdminServer(dataProvider) {
             }
             res.json({ ok: true, data });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -934,7 +934,7 @@ function startAdminServer(dataProvider) {
             // 与当前 web 前端保持一致：直接返回数组
             res.json(Array.isArray(list) ? list : []);
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
@@ -958,8 +958,8 @@ function startAdminServer(dataProvider) {
 
     // API: 清空当前账号运行日志
     app.delete('/api/logs', (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+        const id = requireAccountId(req, res);
+        if (!id) return;
 
         try {
             const data = provider.clearLogs(id);
@@ -980,7 +980,7 @@ function startAdminServer(dataProvider) {
 
             res.json({ ok: true, data });
         } catch (e) {
-            handleApiError(res, e);
+            return handleApiError(res, e);
         }
     });
 
@@ -992,14 +992,14 @@ function startAdminServer(dataProvider) {
             const result = await MiniProgramLoginSession.requestLoginCode({ apiDomain: qrLogin.apiDomain });
             res.json({ ok: true, data: result });
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
     app.post('/api/qr/check', async (req, res) => {
         const { code } = req.body || {};
         if (!code) {
-            return res.status(400).json({ ok: false, error: 'Missing code' });
+            return sendApiError(res, new ApiError('Missing code', 400, 'MISSING_CODE'));
         }
 
         try {
@@ -1028,13 +1028,13 @@ function startAdminServer(dataProvider) {
                 res.json({ ok: true, data: { status: 'Error', error: result.msg } });
             }
         } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
+            return handleApiError(res, e);
         }
     });
 
     app.get('*', (req, res) => {
         if (req.path.startsWith('/api') || req.path.startsWith('/game-config')) {
-             return res.status(404).json({ ok: false, error: 'Not Found' });
+             return sendApiError(res, new ApiError('Not Found', 404, 'NOT_FOUND'));
         }
         if (fs.existsSync(webDist)) {
             res.sendFile(path.join(webDist, 'index.html'));

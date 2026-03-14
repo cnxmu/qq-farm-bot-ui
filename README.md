@@ -166,6 +166,9 @@ environment:
   ADMIN_JWT_SECRET: 至少16位随机字符串
   # 可选：允许跨域来源，多个用逗号分隔
   ADMIN_ALLOWED_ORIGINS: https://your-panel.example.com
+  # 可选：单写者约束，默认严格模式（建议保持 1）
+  FARM_SINGLE_WRITER_STRICT: 1
+  FARM_PERSIST_STRICT_CONFLICT: 1
 ```
 
 修改后执行 `docker compose up -d` 重启生效。
@@ -210,6 +213,18 @@ chmod +x ./qq-farm-bot-linux-x64 && ./qq-farm-bot-linux-x64
 - 生产环境默认不允许使用 `admin` 弱密码启动
 - 请务必设置强密码与 JWT 密钥（`ADMIN_JWT_SECRET`，生产环境要求长度至少 16）
 - 建议配置 `ADMIN_ALLOWED_ORIGINS` 仅允许受信任来源
+
+### 持久化并发边界（重要）
+
+- 当前版本定位为**单进程 / 单容器 / 单写者**模型。
+- 默认开启单写者租约锁（`FARM_SINGLE_WRITER_STRICT=1`），同一 `data/` 上若已有活跃写者进程会拒绝启动。
+- 配置写入开启版本冲突严格模式（`FARM_PERSIST_STRICT_CONFLICT=1`），发生 `__rev` 冲突时返回错误而非静默覆盖。
+- JSON 落盘采用文件锁 + 原子替换 + fsync（文件与目录）增强持久化可靠性。
+
+**不建议/不支持场景**：
+- 多副本同时挂载同一 `data/` 目录
+- 共享网络存储（NFS 等）下多实例并发写
+- 需要分布式强一致持久化保证的场景
 
 ---
 

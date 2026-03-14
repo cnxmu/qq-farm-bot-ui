@@ -13,6 +13,8 @@ const {
 const store = require('./src/models/store');
 const { CONFIG } = require('./src/config/config');
 const { shouldRefuseDefaultAdminPassword, shouldRefuseWeakJwtSecret } = require('./src/services/startup-security');
+const { ensureDataDir } = require('./src/config/runtime-paths');
+const { acquireSingleWriterLease } = require('./src/services/single-writer-lock');
 const { createRuntimeEngine } = require('./src/runtime/runtime-engine');
 const { createModuleLogger } = require('./src/services/logger');
 const mainLogger = createModuleLogger('main');
@@ -22,6 +24,16 @@ const isWorkerProcess = process.env.FARM_WORKER === '1';
 if (isWorkerProcess) {
     require('./src/core/worker');
 } else {
+    const strictSingleWriter = process.env.FARM_SINGLE_WRITER_STRICT !== '0';
+    const dataDir = ensureDataDir();
+    const writerLease = acquireSingleWriterLease({
+        dataDir,
+        strict: strictSingleWriter,
+    });
+    if (!writerLease.ok) {
+        mainLogger.warn('single-writer lease unavailable; continuing in non-strict mode', { reason: writerLease.reason });
+    }
+
     const hasPasswordHash = !!(store.getAdminPasswordHash && store.getAdminPasswordHash());
     if (shouldRefuseDefaultAdminPassword({
         nodeEnv: process.env.NODE_ENV,
@@ -61,4 +73,17 @@ if (isWorkerProcess) {
     }).catch((err) => {
         mainLogger.error('runtime bootstrap failed', { error: err && err.message ? err.message : String(err) });
     });
+
+    const releaseLease = () => {
+        try {
+            if (writerLease && typeof writerLease.release === 'function') {
+                writerLease.release();
+            }
+        } catch {
+            // ignore lease cleanup errors
+        }
+    };
+    process.on('SIGINT', releaseLease);
+    process.on('SIGTERM', releaseLease);
+    process.on('exit', releaseLease);
 }

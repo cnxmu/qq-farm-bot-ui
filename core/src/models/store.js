@@ -24,6 +24,7 @@ const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const DEFAULT_STEAL_PLANT_BLACKLIST = [];
 const MAX_FRIEND_CACHE_TOTAL = 5000;
 const WORKER_PERSIST_GUARD = process.env.FARM_WORKER === '1' || !!process.env.FARM_ACCOUNT_ID;
+const STRICT_PERSIST_CONFLICT = process.env.FARM_PERSIST_STRICT_CONFLICT !== '0';
 
 const DEFAULT_OFFLINE_REMINDER = {
     channel: 'webhook',
@@ -657,8 +658,14 @@ function saveGlobalConfig() {
         const diskRev = Number(diskData && diskData.__rev) || 0;
         const memRev = Number(globalConfig.__rev) || 0;
         if (diskRev !== memRev) {
-            console.warn(`[系统] 配置版本冲突，取消写入 (diskRev=${diskRev}, memRev=${memRev})`);
+            const message = `[系统] 配置版本冲突，拒绝写入 (diskRev=${diskRev}, memRev=${memRev})`;
+            console.warn(message);
             loadGlobalConfig();
+            if (STRICT_PERSIST_CONFLICT) {
+                const err = new Error(message);
+                err.code = 'CONFIG_WRITE_CONFLICT';
+                throw err;
+            }
             return false;
         }
 
