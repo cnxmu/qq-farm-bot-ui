@@ -47,6 +47,13 @@ function cleanupStaleLock(lockPath, staleMs) {
     return false;
 }
 
+function ensureParentDir(filePath) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+}
+
 function withFileLock(filePath, fn, options = {}) {
     const staleMs = Math.max(1_000, Number(options.staleMs) || DEFAULT_LOCK_STALE_MS);
     const retry = Math.max(0, Number(options.retry) || DEFAULT_LOCK_RETRY);
@@ -54,7 +61,7 @@ function withFileLock(filePath, fn, options = {}) {
     const lockPath = `${filePath}.lock`;
     ensureParentDir(lockPath);
 
-    let lastError = null;
+    let lastAcquireError = null;
     for (let i = 0; i <= retry; i += 1) {
         let lockFd = null;
         try {
@@ -68,31 +75,27 @@ function withFileLock(filePath, fn, options = {}) {
                 try { fs.unlinkSync(lockPath); } catch {}
             }
         } catch (err) {
-            lastError = err;
             if (lockFd !== null) {
                 try { fs.closeSync(lockFd); } catch {}
             }
-            if (err && err.code === 'EEXIST') {
-                cleanupStaleLock(lockPath, staleMs);
-                if (i < retry) sleepMs(waitMs);
-                continue;
+
+            // Non-lock-acquire errors come from fn() after lock acquisition;
+            // rethrow original error instead of converting to FILE_LOCK_FAILED.
+            if (!err || err.code !== 'EEXIST') {
+                throw err;
             }
-            break;
+
+            lastAcquireError = err;
+            cleanupStaleLock(lockPath, staleMs);
+            if (i < retry) sleepMs(waitMs);
         }
     }
 
     const message = `failed to acquire file lock: ${lockPath}`;
     const lockError = new Error(message);
     lockError.code = 'FILE_LOCK_FAILED';
-    lockError.cause = lastError;
+    lockError.cause = lastAcquireError;
     throw lockError;
-}
-
-function ensureParentDir(filePath) {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
 }
 
 function readTextFile(filePath, fallback = '') {
@@ -121,6 +124,26 @@ function writeJsonFileAtomic(filePath, data, space = 2) {
     writeTextFileAtomic(filePath, json);
 }
 
+function fsyncDirBestEffort(dirPath) {
+    let dirFd = null;
+    try {
+        dirFd = fs.openSync(dirPath, 'r');
+        fs.fsyncSync(dirFd);
+    } catch (err) {
+        // Directory fsync is not supported uniformly across platforms/filesystems
+        // (notably EPERM/EINVAL on Windows). Keep atomic rename semantics and
+        // treat this as best-effort durability enhancement.
+        const code = err && err.code;
+        if (code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EBADF') {
+            throw err;
+        }
+    } finally {
+        if (dirFd !== null) {
+            try { fs.closeSync(dirFd); } catch {}
+        }
+    }
+}
+
 function writeTextFileAtomic(filePath, text = '') {
     withFileLock(filePath, () => {
         ensureParentDir(filePath);
@@ -131,22 +154,16 @@ function writeTextFileAtomic(filePath, text = '') {
         try {
             fd = fs.openSync(tmpPath, 'w', 0o600);
             fs.writeFileSync(fd, String(text), 'utf8');
+            // Ensure tmp file content is flushed before rename.
             fs.fsyncSync(fd);
             fs.closeSync(fd);
             fd = null;
 
+            // Atomic replace target.
             fs.renameSync(tmpPath, filePath);
 
-            // flush directory metadata to improve rename durability guarantees
-            let dirFd = null;
-            try {
-                dirFd = fs.openSync(dirPath, 'r');
-                fs.fsyncSync(dirFd);
-            } finally {
-                if (dirFd !== null) {
-                    try { fs.closeSync(dirFd); } catch {}
-                }
-            }
+            // Best-effort metadata flush (platform dependent).
+            fsyncDirBestEffort(dirPath);
         } finally {
             if (fd !== null) {
                 try { fs.closeSync(fd); } catch {}
