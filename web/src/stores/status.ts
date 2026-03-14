@@ -185,7 +185,7 @@ export const useStatusStore = defineStore('status', () => {
         error.value = ''
       }
       else {
-        error.value = data.error
+        error.value = data.message
       }
     }
     catch (e: any) {
@@ -229,7 +229,7 @@ export const useStatusStore = defineStore('status', () => {
       headers: { 'x-account-id': id },
     })
     if (!data?.ok) {
-      throw new Error(data?.error || '清空日志失败')
+      throw new Error(data?.message || '清空日志失败')
     }
     logs.value = []
     error.value = ''
@@ -255,8 +255,8 @@ export const useStatusStore = defineStore('status', () => {
   async function fetchAccountLogs(limit = 100) {
     try {
       const res = await api.get(`/api/account-logs?limit=${Math.max(1, Number(limit) || 100)}`)
-      if (Array.isArray(res.data)) {
-        accountLogs.value = res.data
+      if (res.data?.ok && Array.isArray(res.data?.data)) {
+        accountLogs.value = res.data.data
       }
     }
     catch (e) {

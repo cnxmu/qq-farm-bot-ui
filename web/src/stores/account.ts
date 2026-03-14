@@ -100,8 +100,8 @@ export const useAccountStore = defineStore('account', () => {
   async function fetchLogs() {
     try {
       const res = await api.get('/api/account-logs?limit=100')
-      if (Array.isArray(res.data)) {
-        logs.value = res.data
+      if (res.data?.ok && Array.isArray(res.data?.data)) {
+        logs.value = res.data.data
       }
     }
     catch (e) {

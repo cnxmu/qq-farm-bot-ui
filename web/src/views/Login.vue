@@ -22,11 +22,11 @@ async function handleLogin() {
       router.push('/')
     }
     else {
-      error.value = res.data.error || '登录失败'
+      error.value = res.data.message || '登录失败'
     }
   }
   catch (e: any) {
-    error.value = e.response?.data?.error || e.message || '登录异常'
+    error.value = e.response?.data?.message || e.message || '登录异常'
   }
   finally {
     loading.value = false

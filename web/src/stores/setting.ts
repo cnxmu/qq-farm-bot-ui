@@ -201,7 +201,7 @@ export const useSettingStore = defineStore('setting', () => {
 
   async function saveSettings(accountId: string, newSettings: any) {
     if (!accountId)
-      return { ok: false, error: '未选择账号' }
+      return { ok: false, message: '未选择账号' }
     loading.value = true
     try {
       // 1. Save general settings
@@ -241,7 +241,7 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.offlineReminder = config
         return { ok: true }
       }
-      return { ok: false, error: '保存失败' }
+      return { ok: false, message: '保存失败' }
     }
     finally {
       loading.value = false
@@ -256,7 +256,7 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.qrLogin = data.data || config
         return { ok: true }
       }
-      return { ok: false, error: '保存失败' }
+      return { ok: false, message: '保存失败' }
     }
     finally {
       loading.value = false
@@ -271,7 +271,7 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.runtimeClient = saved
         return { ok: true }
       }
-      return { ok: false, error: '保存失败' }
+      return { ok: false, message: '保存失败' }
     }
     finally {
       loading.value = false

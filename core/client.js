@@ -25,6 +25,10 @@ if (isWorkerProcess) {
     require('./src/core/worker');
 } else {
     const strictSingleWriter = process.env.FARM_SINGLE_WRITER_STRICT !== '0';
+    if (String(process.env.NODE_ENV || '').toLowerCase() === 'production' && !strictSingleWriter) {
+        mainLogger.error('refuse to start in production when FARM_SINGLE_WRITER_STRICT=0');
+        process.exit(1);
+    }
     const dataDir = ensureDataDir();
     const writerLease = acquireSingleWriterLease({
         dataDir,

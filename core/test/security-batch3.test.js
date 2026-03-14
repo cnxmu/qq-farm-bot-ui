@@ -16,6 +16,7 @@ test('api-error keeps unified payload fields and conflict mapping', () => {
 
     const err = new ApiError('bad input', 400, 'BAD_INPUT', { field: 'id' });
     assert.equal(err.details.field, 'id');
+    assert.equal(Object.prototype.hasOwnProperty.call(err, 'error'), false);
 });
 
 test('admin controller has no legacy direct "ok:false" status-json branches', () => {

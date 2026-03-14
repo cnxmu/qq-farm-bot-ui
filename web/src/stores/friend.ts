@@ -121,11 +121,11 @@ export const useFriendStore = defineStore('friend', () => {
         interactRecords.value = Array.isArray(res.data.data) ? res.data.data : []
       }
       else {
-        interactError.value = res.data.error || '加载访客记录失败'
+        interactError.value = res.data.message || '加载访客记录失败'
       }
     }
     catch (error: any) {
-      interactError.value = error?.response?.data?.error || error?.message || '加载访客记录失败'
+      interactError.value = error?.response?.data?.message || error?.message || '加载访客记录失败'
     }
     finally {
       interactLoading.value = false
@@ -193,10 +193,10 @@ export const useFriendStore = defineStore('friend', () => {
         friendCache.value = res.data.data || []
         return { ok: true, message: res.data.message || '更新成功' }
       }
-      return { ok: false, message: res.data.error || '更新失败' }
+      return { ok: false, message: res.data.message || '更新失败' }
     }
     catch (error: any) {
-      return { ok: false, message: error?.response?.data?.error || error?.message || '更新失败' }
+      return { ok: false, message: error?.response?.data?.message || error?.message || '更新失败' }
     }
     finally {
       friendCacheUpdating.value = false
@@ -217,10 +217,10 @@ export const useFriendStore = defineStore('friend', () => {
         friendCache.value = res.data.data || []
         return { ok: true, message: res.data.message || '导入成功' }
       }
-      return { ok: false, message: res.data.error || '导入失败' }
+      return { ok: false, message: res.data.message || '导入失败' }
     }
     catch (error: any) {
-      return { ok: false, message: error?.response?.data?.error || error?.message || '导入失败' }
+      return { ok: false, message: error?.response?.data?.message || error?.message || '导入失败' }
     }
     finally {
       friendCacheUpdating.value = false
@@ -238,10 +238,10 @@ export const useFriendStore = defineStore('friend', () => {
         friendCache.value = res.data.data || []
         return { ok: true, message: res.data.message || '删除成功' }
       }
-      return { ok: false, message: res.data.error || '删除失败' }
+      return { ok: false, message: res.data.message || '删除失败' }
     }
     catch (error: any) {
-      return { ok: false, message: error?.response?.data?.error || error?.message || '删除失败' }
+      return { ok: false, message: error?.response?.data?.message || error?.message || '删除失败' }
     }
   }
 

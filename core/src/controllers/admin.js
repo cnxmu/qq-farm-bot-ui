@@ -42,6 +42,58 @@ let app = null;
 let server = null;
 let provider = null; // DataProvider
 let io = null;
+let revokeGcTimer = null;
+let serverSockets = new Set();
+
+async function stopAdminServer() {
+    try {
+        if (io) {
+            io.removeAllListeners();
+            await new Promise((resolve) => {
+                try {
+                    io.close(() => resolve());
+                } catch {
+                    resolve();
+                }
+            });
+        }
+    } catch {}
+    io = null;
+
+    try {
+        if (revokeGcTimer) clearInterval(revokeGcTimer);
+    } catch {}
+    revokeGcTimer = null;
+
+    try {
+        if (server) {
+            for (const socket of serverSockets) {
+                try { socket.destroy(); } catch {}
+            }
+            serverSockets.clear();
+            try {
+                if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+                if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+            } catch {}
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 500);
+                try {
+                    server.close(() => {
+                        clearTimeout(timer);
+                        resolve();
+                    });
+                } catch {
+                    clearTimeout(timer);
+                    resolve();
+                }
+            });
+        }
+    } catch {}
+    server = null;
+    app = null;
+    provider = null;
+    serverSockets = new Set();
+}
 
 function emitRealtimeStatus(accountId, status) {
     if (!io) return;
@@ -72,9 +124,11 @@ function startAdminServer(dataProvider) {
     provider = dataProvider;
 
     app = express();
+    const trustProxy = String(process.env.ADMIN_TRUST_PROXY || 'loopback, linklocal, uniquelocal').trim();
+    app.set('trust proxy', trustProxy);
     app.use(express.json());
 
-    const revokedTokenIds = new Set();
+    const revokedTokenIds = new Map(); // jti -> exp(sec)
     const allowDisablePasswordAuth = process.env.NODE_ENV !== 'production';
     const signingSecret = buildSigningSecret(
         CONFIG.adminJwtSecret
@@ -88,6 +142,10 @@ function startAdminServer(dataProvider) {
     }
 
     const verifyToken = (rawToken) => {
+        const nowSec = Math.floor(Date.now() / 1000);
+        for (const [id, exp] of revokedTokenIds.entries()) {
+            if (!Number.isFinite(exp) || exp <= nowSec) revokedTokenIds.delete(id);
+        }
         const verified = verifyJwt(rawToken, signingSecret);
         if (!verified.ok) return { ok: false, error: verified.error };
         const jti = String((verified.payload && verified.payload.jti) || '');
@@ -96,6 +154,14 @@ function startAdminServer(dataProvider) {
         }
         return { ok: true, payload: verified.payload };
     };
+
+    revokeGcTimer = setInterval(() => {
+        const nowSec = Math.floor(Date.now() / 1000);
+        for (const [id, exp] of revokedTokenIds.entries()) {
+            if (!Number.isFinite(exp) || exp <= nowSec) revokedTokenIds.delete(id);
+        }
+    }, 10 * 60 * 1000);
+    revokeGcTimer.unref();
 
     const authRequired = (req, res, next) => {
         const token = req.headers['x-admin-token'];
@@ -278,8 +344,9 @@ function startAdminServer(dataProvider) {
     app.post('/api/logout', (req, res) => {
         const payload = req.adminTokenPayload || null;
         const jti = payload && payload.jti ? String(payload.jti) : '';
+        const exp = payload && payload.exp ? Number(payload.exp) : 0;
         if (jti) {
-            revokedTokenIds.add(jti);
+            revokedTokenIds.set(jti, Number.isFinite(exp) ? exp : 0);
             if (io) {
                 for (const socket of io.sockets.sockets.values()) {
                     if (String((socket.data.adminTokenPayload || {}).jti || '') === jti) {
@@ -452,23 +519,26 @@ function startAdminServer(dataProvider) {
     });
 
     app.post('/api/friend-blacklist/toggle', (req, res) => {
-        const id = requireAccountId(req, res);
-        if (!id) return;
-        const gid = Number((req.body || {}).gid);
-        if (!gid) return sendApiError(res, new ApiError('Missing gid', 400, 'MISSING_GID'));
-        const current = store.getFriendBlacklist ? store.getFriendBlacklist(id) : [];
-        let next;
-        if (current.includes(gid)) {
-            next = current.filter(g => g !== gid);
-        } else {
-            next = [...current, gid];
+        try {
+            const id = requireAccountId(req, res);
+            if (!id) return;
+            const gid = Number((req.body || {}).gid);
+            if (!gid) return sendApiError(res, new ApiError('Missing gid', 400, 'MISSING_GID'));
+            const current = store.getFriendBlacklist ? store.getFriendBlacklist(id) : [];
+            let next;
+            if (current.includes(gid)) {
+                next = current.filter(g => g !== gid);
+            } else {
+                next = [...current, gid];
+            }
+            const saved = store.setFriendBlacklist ? store.setFriendBlacklist(id, next) : next;
+            if (provider && typeof provider.broadcastConfig === 'function') {
+                provider.broadcastConfig(id);
+            }
+            return res.json({ ok: true, data: saved });
+        } catch (e) {
+            return handleApiError(res, e);
         }
-        const saved = store.setFriendBlacklist ? store.setFriendBlacklist(id, next) : next;
-        // 同步配置到 worker 进程
-        if (provider && typeof provider.broadcastConfig === 'function') {
-            provider.broadcastConfig(id);
-        }
-        res.json({ ok: true, data: saved });
     });
 
     // API: 好友缓存
@@ -931,8 +1001,7 @@ function startAdminServer(dataProvider) {
         try {
             const limit = Number.parseInt(req.query.limit) || 100;
             const list = provider.getAccountLogs ? provider.getAccountLogs(limit) : [];
-            // 与当前 web 前端保持一致：直接返回数组
-            res.json(Array.isArray(list) ? list : []);
+            res.json({ ok: true, data: Array.isArray(list) ? list : [] });
         } catch (e) {
             return handleApiError(res, e);
         }
@@ -1086,11 +1155,20 @@ function startAdminServer(dataProvider) {
     server = app.listen(port, '0.0.0.0', () => {
         adminLogger.info('admin panel started', { url: `http://localhost:${port}`, port });
     });
+    server.on('connection', (socket) => {
+        serverSockets.add(socket);
+        socket.on('close', () => serverSockets.delete(socket));
+    });
 
     io = new SocketIOServer(server, {
         path: '/socket.io',
         cors: {
-            origin: '*',
+            origin: (origin, callback) => {
+                const src = String(origin || '').trim();
+                if (!src) return callback(null, true);
+                if (allowAnyOrigin || allowedOriginSet.has(src)) return callback(null, true);
+                return callback(new Error('Origin not allowed'));
+            },
             methods: ['GET', 'POST'],
             allowedHeaders: ['x-admin-token', 'x-account-id'],
         },
@@ -1129,6 +1207,7 @@ function startAdminServer(dataProvider) {
 
 module.exports = {
     startAdminServer,
+    stopAdminServer,
     emitRealtimeStatus,
     emitRealtimeLog,
     emitRealtimeAccountLog,

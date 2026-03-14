@@ -32,7 +32,6 @@ function sendApiError(res, input, fallbackMessage = '服务器内部错误') {
     const payload = {
         ok: false,
         message: err.message,
-        error: err.message,
         code: err.code,
     };
     if (err.details) payload.details = err.details;

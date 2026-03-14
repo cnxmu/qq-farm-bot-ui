@@ -876,7 +876,7 @@ async function saveAccountSettings() {
       showAlert('账号设置已保存')
     }
     else {
-      showAlert(`保存失败: ${res.error}`, 'danger')
+      showAlert(`保存失败: ${res.message}`, 'danger')
     }
   }
   finally {
@@ -907,7 +907,7 @@ async function handleChangePassword() {
       passwordForm.value = { old: '', new: '', confirm: '' }
     }
     else {
-      showAlert(`修改失败: ${res.error || '未知错误'}`, 'danger')
+      showAlert(`修改失败: ${res.message || '未知错误'}`, 'danger')
     }
   }
   finally {
@@ -941,11 +941,11 @@ async function handleTogglePasswordAuth() {
       showAlert(passwordAuthDisabled.value ? '已禁用密码认证' : '已启用密码认证')
     }
     else {
-      showAlert(`操作失败: ${data?.error || '未知错误'}`, 'danger')
+      showAlert(`操作失败: ${data?.message || '未知错误'}`, 'danger')
     }
   }
   catch (e: any) {
-    showAlert(`操作失败: ${e?.response?.data?.error || e?.message || '未知错误'}`, 'danger')
+    showAlert(`操作失败: ${e?.response?.data?.message || e?.message || '未知错误'}`, 'danger')
   }
   finally {
     passwordAuthLoading.value = false
@@ -960,7 +960,7 @@ async function handleSaveQrLogin() {
       showAlert('二维码接口设置已保存')
     }
     else {
-      showAlert(`保存失败: ${res.error || '未知错误'}`, 'danger')
+      showAlert(`保存失败: ${res.message || '未知错误'}`, 'danger')
     }
   }
   finally {
@@ -975,7 +975,7 @@ async function handleSaveRuntimeClient() {
       showAlert('运行时连接配置已保存，运行中账号将自动重连生效')
     }
     else {
-      showAlert(`保存失败: ${res.error || '未知错误'}`, 'danger')
+      showAlert(`保存失败: ${res.message || '未知错误'}`, 'danger')
     }
   }
   finally {
@@ -995,7 +995,7 @@ async function handleSaveOffline() {
       showAlert('下线提醒设置已保存')
     }
     else {
-      showAlert(`保存失败: ${res.error || '未知错误'}`, 'danger')
+      showAlert(`保存失败: ${res.message || '未知错误'}`, 'danger')
     }
   }
   finally {
@@ -1011,11 +1011,11 @@ async function handleTestOffline() {
       showAlert('测试消息发送成功')
     }
     else {
-      showAlert(`测试失败: ${data?.error || '未知错误'}`, 'danger')
+      showAlert(`测试失败: ${data?.message || '未知错误'}`, 'danger')
     }
   }
   catch (e: any) {
-    const msg = e?.response?.data?.error || e?.message || '请求失败'
+    const msg = e?.response?.data?.message || e?.message || '请求失败'
     showAlert(`测试失败: ${msg}`, 'danger')
   }
   finally {

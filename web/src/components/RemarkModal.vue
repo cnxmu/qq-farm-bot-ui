@@ -40,11 +40,11 @@ async function save() {
       emit('close')
     }
     else {
-      errorMessage.value = `保存失败: ${res.data.error}`
+      errorMessage.value = `保存失败: ${res.data.message}`
     }
   }
   catch (e: any) {
-    errorMessage.value = `保存失败: ${e.response?.data?.error || e.message}`
+    errorMessage.value = `保存失败: ${e.response?.data?.message || e.message}`
   }
   finally {
     loading.value = false
