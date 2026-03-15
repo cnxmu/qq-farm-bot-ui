@@ -224,6 +224,17 @@ function createWorkerManager(options) {
                 }
             }
 
+            if (msg.data && msg.data.status) {
+                const syncGid = Number(msg.data.status.gid || 0);
+                if (Number.isFinite(syncGid) && syncGid > 0) {
+                    const existingGid = Number(worker.gid || 0);
+                    if (existingGid !== syncGid) {
+                        worker.gid = syncGid;
+                        addOrUpdateAccount({ id: accountId, gid: String(syncGid) });
+                    }
+                }
+            }
+
             const connected = !!(msg.data && msg.data.connection && msg.data.connection.connected);
             if (connected) {
                 worker.disconnectedSince = 0;

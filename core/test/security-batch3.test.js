@@ -76,3 +76,15 @@ test('store normalizes account platform when loading and updating', () => {
     assert.equal(content.includes("account.platform = normalizePlatform(account.platform);"), true);
     assert.equal(content.includes("platform: normalizePlatform(acc.platform"), true);
 });
+
+
+test('stats payload includes gid and worker handles ws_closed event', () => {
+    const statsFile = path.join(__dirname, '../src/services/stats.js');
+    const statsContent = fs.readFileSync(statsFile, 'utf8');
+    assert.equal(statsContent.includes('gid: Number.isFinite(Number(userObj.gid)) ? Number(userObj.gid) : 0'), true);
+
+    const workerFile = path.join(__dirname, '../src/core/worker.js');
+    const workerContent = fs.readFileSync(workerFile, 'utf8');
+    assert.equal(workerContent.includes("networkEvents.on('ws_closed', onWsClosed)"), true);
+    assert.equal(workerContent.includes('网络连接已断开(code='), true);
+});

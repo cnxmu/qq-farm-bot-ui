@@ -115,6 +115,7 @@ let onSellGain = null;
 let onFarmHarvested = null;
 let harvestSellRunning = false;
 let onWsError = null;
+let onWsClosed = null;
 let wsErrorHandledAt = 0;
 let lastDailyRunDate = '';
 const workerScheduler = createScheduler('worker');
@@ -503,6 +504,10 @@ async function startBot(config) {
         networkEvents.off('ws_error', onWsError);
         onWsError = null;
     }
+    if (onWsClosed) {
+        networkEvents.off('ws_closed', onWsClosed);
+        onWsClosed = null;
+    }
     onWsError = (payload) => {
         if ((Number(payload?.code) || 0) !== 400) return;
         const now = Date.now();
@@ -523,6 +528,29 @@ async function startBot(config) {
     networkEvents.on('ws_error', onWsError);
 
     networkEvents.on('kickout', onKickout);
+
+
+    if (onWsClosed) {
+        networkEvents.off('ws_closed', onWsClosed);
+        onWsClosed = null;
+    }
+    onWsClosed = (payload) => {
+        const closeCode = Number(payload && payload.code) || 0;
+        if (!isRunning) return;
+        if (loginReady) {
+            log('系统', `网络连接已断开(code=${closeCode})，暂停任务并等待重连`, {
+                module: 'system',
+                event: 'ws_closed',
+                result: 'warn',
+            });
+        }
+        loginReady = false;
+        stopUnifiedScheduler();
+        stopFarmCheckLoop();
+        stopFriendCheckLoop();
+        stopDailyRoutineTimer();
+    };
+    networkEvents.on('ws_closed', onWsClosed);
 
     const onLoginSuccess = async () => {
         loginReady = true;
@@ -604,6 +632,10 @@ async function stopBot() {
     if (onWsError) {
         networkEvents.off('ws_error', onWsError);
         onWsError = null;
+    }
+    if (onWsClosed) {
+        networkEvents.off('ws_closed', onWsClosed);
+        onWsClosed = null;
     }
     if (onSellGain) {
         networkEvents.off('sell', onSellGain);

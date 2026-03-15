@@ -20,6 +20,7 @@ export const useFarmStore = defineStore('farm', () => {
   const seeds = ref<any[]>([])
   const summary = ref<any>({})
   const loading = ref(false)
+  const seedsError = ref('')
 
   async function fetchLands(accountId: string) {
     if (!accountId)
@@ -42,11 +43,22 @@ export const useFarmStore = defineStore('farm', () => {
   async function fetchSeeds(accountId: string) {
     if (!accountId)
       return
-    const { data } = await api.get('/api/seeds', {
-      headers: { 'x-account-id': accountId },
-    })
-    if (data && data.ok)
-      seeds.value = data.data || []
+    seedsError.value = ''
+    try {
+      const { data } = await api.get('/api/seeds', {
+        headers: { 'x-account-id': accountId },
+      })
+      if (data && data.ok) {
+        seeds.value = data.data || []
+        return
+      }
+      seeds.value = []
+      seedsError.value = data?.message || '获取种子失败'
+    }
+    catch (error: any) {
+      seeds.value = []
+      seedsError.value = error?.response?.data?.message || error?.message || '获取种子失败'
+    }
   }
 
   async function operate(accountId: string, opType: string) {
@@ -58,5 +70,5 @@ export const useFarmStore = defineStore('farm', () => {
     await fetchLands(accountId)
   }
 
-  return { lands, summary, seeds, loading, fetchLands, fetchSeeds, operate }
+  return { lands, summary, seeds, loading, seedsError, fetchLands, fetchSeeds, operate }
 })

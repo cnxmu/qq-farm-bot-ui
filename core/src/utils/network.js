@@ -488,6 +488,7 @@ function connect(code, onLoginSuccess) {
     ws.binaryType = 'arraybuffer';
 
     ws.on('open', () => {
+        networkEvents.emit('ws_opened', { at: Date.now() });
         sendLogin(onLoginSuccess);
     });
 
@@ -497,6 +498,7 @@ function connect(code, onLoginSuccess) {
 
     ws.on('close', (code, _reason) => {
         console.warn(`[WS] 连接关闭 (code=${code})`);
+        networkEvents.emit('ws_closed', { code: Number(code) || 0, at: Date.now() });
         cleanup(`连接关闭(code=${code})`);
         // 自动重连：延迟 5s 后重试，复用已保存的登录回调
         if (savedLoginCallback) {

@@ -161,6 +161,7 @@ function getStats(statusData, userState, connected, limits) {
     return {
         connection: { connected },
         status: {
+            gid: Number.isFinite(Number(userObj.gid)) ? Number(userObj.gid) : 0,
             name: userObj.name || statusObj.name,
             level: statusObj.level || userObj.level || 0,
             gold: currentGold,
