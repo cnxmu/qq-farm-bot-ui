@@ -1,4 +1,5 @@
 const { createScheduler } = require('../services/scheduler');
+const { classifyKickoutReason } = require('../services/session-reason');
 
 function createWorkerManager(options) {
     const {
@@ -290,15 +291,36 @@ function createWorkerManager(options) {
                 );
             }
         } else if (msg.type === 'account_kicked') {
-            const reason = msg.reason || '未知';
+            const incomingReason = msg.reason || '未知';
+            const info = classifyKickoutReason(incomingReason);
+            const reason = info.reason || '未知';
+            const reloginRequired = msg.reloginRequired !== undefined ? !!msg.reloginRequired : !!info.reloginRequired;
+            const category = String(msg.category || info.category || 'kickout');
+            const actionHint = String(msg.actionHint || info.actionHint || '').trim();
+
             log('系统', `账号 ${worker.name} 被踢下线，已自动停止账号`, { accountId: String(accountId), accountName: worker.name });
+            if (reloginRequired) {
+                worker.wsError = {
+                    code: 401,
+                    message: `${reason}${actionHint ? `，${actionHint}` : ''}`,
+                    at: Date.now(),
+                };
+            }
             triggerOfflineReminder({
                 accountId,
                 accountName: worker.name,
                 reason: `kickout:${reason}`,
                 offlineMs: 0,
             });
-            addAccountLog('kickout_stop', `账号 ${worker.name} 被踢下线，已自动停止`, accountId, worker.name, { reason });
+            addAccountLog(
+                reloginRequired ? 'session_expired' : 'kickout_stop',
+                reloginRequired
+                    ? `账号 ${worker.name} 登录态失效，需重新登录并更新 code`
+                    : `账号 ${worker.name} 被踢下线，已自动停止`,
+                accountId,
+                worker.name,
+                { reason, category, reloginRequired, actionHint },
+            );
             stopWorker(accountId);
         } else if (msg.type === 'friend_blacklist_add') {
             const gid = Number(msg.gid);

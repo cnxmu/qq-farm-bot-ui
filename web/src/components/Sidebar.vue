@@ -104,7 +104,8 @@ watch(() => currentAccount.value?.id || currentAccount.value?.uin || '', () => {
 }, { immediate: true })
 
 watch(() => status.value?.wsError, (wsError: any) => {
-  if (!wsError || Number(wsError.code) !== 400 || !currentAccount.value)
+  const wsCode = Number(wsError?.code)
+  if (!wsError || ![400, 401].includes(wsCode) || !currentAccount.value)
     return
 
   const errAt = Number(wsError.at) || 0

@@ -27,6 +27,7 @@ const { connect, reconnect, cleanup, getWs, getUserState, networkEvents } = requ
 const { loadProto } = require('../utils/proto');
 const { setLogHook, log, toNum } = require('../utils/utils');
 const { validateAutomation, validateIntervals, validateQuietHours } = require('../services/config-validator');
+const { classifyKickoutReason } = require('../services/session-reason');
 
 if (parentPort && workerData && workerData.accountId && !process.env.FARM_ACCOUNT_ID) {
     process.env.FARM_ACCOUNT_ID = String(workerData.accountId);
@@ -624,9 +625,20 @@ async function stopBot() {
 }
 
 function onKickout(payload) {
-    const reason = payload && payload.reason ? payload.reason : '未知';
+    const rawReason = payload && payload.reason ? payload.reason : '未知';
+    const info = classifyKickoutReason(rawReason);
+    const reason = info.reason || '未知';
     log('系统', `检测到踢下线，准备自动停止账号。原因: ${reason}`);
-    sendToMaster({ type: 'account_kicked', reason });
+    if (info.reloginRequired) {
+        log('系统', `登录态已失效：${info.actionHint}`);
+    }
+    sendToMaster({
+        type: 'account_kicked',
+        reason,
+        category: info.category,
+        reloginRequired: !!info.reloginRequired,
+        actionHint: info.actionHint || '',
+    });
     workerScheduler.setTimeoutTask('kickout_stop', 200, () => {
         stopBot().catch(() => exitWorker(0));
     });
