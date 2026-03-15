@@ -204,29 +204,29 @@ export const useSettingStore = defineStore('setting', () => {
       return { ok: false, message: '未选择账号' }
     loading.value = true
     try {
-      // 1. Save general settings
-      const settingsPayload = {
+      const payload = {
         plantingStrategy: newSettings.plantingStrategy,
         preferredSeedId: newSettings.preferredSeedId,
         bagSeedPriority: newSettings.bagSeedPriority,
         intervals: newSettings.intervals,
         friendQuietHours: newSettings.friendQuietHours,
+        automation: newSettings.automation,
       }
 
-      await api.post('/api/settings/save', settingsPayload, {
+      const { data } = await api.post('/api/settings/save', payload, {
         headers: { 'x-account-id': accountId },
       })
 
-      // 2. Save automation settings
-      if (newSettings.automation) {
-        await api.post('/api/automation', newSettings.automation, {
-          headers: { 'x-account-id': accountId },
-        })
+      if (!data?.ok) {
+        return { ok: false, message: data?.message || '保存失败' }
       }
 
-      // Refresh settings
       await fetchSettings(accountId)
       return { ok: true }
+    }
+    catch (error: any) {
+      const message = error?.response?.data?.message || error?.message || '保存失败'
+      return { ok: false, message }
     }
     finally {
       loading.value = false

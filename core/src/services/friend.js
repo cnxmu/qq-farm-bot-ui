@@ -191,19 +191,12 @@ function markIdleFriendProbeCooldown(friendGid, hadAction, nowMs = Date.now()) {
 // ============ 好友 API ============
 
 async function fetchFriendsFromApi() {
-    const isQQ = CONFIG.platform === 'qq';
-    if (isQQ) {
-        const syncReq = types.SyncAllRequest || types.SyncAllFriendsRequest;
-        const syncRep = types.SyncAllReply || types.SyncAllFriendsReply;
-        if (!syncReq || !syncRep) throw new Error('SyncAll 接口类型未加载');
-        const body = syncReq.encode(syncReq.create({ open_ids: [] })).finish();
-        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
-        return syncRep.decode(replyBody);
-    }
-
-    const body = types.GetAllFriendsRequest.encode(types.GetAllFriendsRequest.create({})).finish();
-    const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll', body);
-    return types.GetAllFriendsReply.decode(replyBody);
+    const syncReq = types.SyncAllRequest || types.SyncAllFriendsRequest;
+    const syncRep = types.SyncAllReply || types.SyncAllFriendsReply;
+    if (!syncReq || !syncRep) throw new Error('SyncAll 接口类型未加载');
+    const body = syncReq.encode(syncReq.create({ open_ids: [] })).finish();
+    const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
+    return syncRep.decode(replyBody);
 }
 
 function saveFriendsToCache(friends) {
@@ -713,8 +706,13 @@ async function getFriendsList() {
                 if (byName !== 0) return byName;
                 return Number(a.gid || 0) - Number(b.gid || 0);
             });
-    } catch {
-        return [];
+    } catch (err) {
+        logWarn('好友', `获取好友列表失败: ${err && err.message ? err.message : String(err || 'unknown')}`, {
+            module: 'friend',
+            event: 'friend_list',
+            result: 'error',
+        });
+        throw err;
     }
 }
 

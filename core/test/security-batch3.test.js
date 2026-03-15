@@ -59,3 +59,20 @@ test('security middleware uses unified message/code payload instead of legacy er
     assert.equal(content.includes("code: 'RATE_LIMITED'"), true);
 });
 
+
+
+test('friend service uses SyncAll and no longer swallows friend list errors', () => {
+    const file = path.join(__dirname, '../src/services/friend.js');
+    const content = fs.readFileSync(file, 'utf8');
+    assert.equal(content.includes("sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll'"), true);
+    assert.equal(content.includes("sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll'"), false);
+    assert.equal(content.includes('获取好友列表失败'), true);
+    assert.equal(content.includes('throw err;'), true);
+});
+
+test('store normalizes account platform when loading and updating', () => {
+    const file = path.join(__dirname, '../src/models/store.js');
+    const content = fs.readFileSync(file, 'utf8');
+    assert.equal(content.includes("account.platform = normalizePlatform(account.platform);"), true);
+    assert.equal(content.includes("platform: normalizePlatform(acc.platform"), true);
+});

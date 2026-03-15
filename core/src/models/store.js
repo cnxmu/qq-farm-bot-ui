@@ -679,6 +679,9 @@ function saveGlobalConfig() {
         }
     } catch (e) {
         console.error('保存配置失败:', e.message);
+        if ((e && e.code === 'CONFIG_WRITE_CONFLICT') || STRICT_PERSIST_CONFLICT) {
+            throw e;
+        }
     }
     return false;
 }
@@ -971,7 +974,15 @@ function getAccounts() {
 
 function normalizeAccountsData(raw) {
     const data = raw && typeof raw === 'object' ? raw : {};
-    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    const normalizePlatform = (value) => {
+        const normalized = String(value || '').trim().toLowerCase();
+        return normalized === 'wx' ? 'wx' : 'qq';
+    };
+    const accounts = (Array.isArray(data.accounts) ? data.accounts : []).map((item) => {
+        const account = item && typeof item === 'object' ? { ...item } : {};
+        account.platform = normalizePlatform(account.platform);
+        return account;
+    });
     const maxId = accounts.reduce((m, a) => Math.max(m, Number.parseInt(a && a.id, 10) || 0), 0);
     let nextId = Number.parseInt(data.nextId, 10);
     if (!Number.isFinite(nextId) || nextId <= 0) nextId = maxId + 1;
@@ -982,11 +993,21 @@ function normalizeAccountsData(raw) {
 
 function addOrUpdateAccount(acc) {
     const data = normalizeAccountsData(loadAccounts());
+    const normalizePlatform = (value) => {
+        const normalized = String(value || '').trim().toLowerCase();
+        return normalized === 'wx' ? 'wx' : 'qq';
+    };
     let touchedAccountId = '';
     if (acc.id) {
         const idx = data.accounts.findIndex(a => a.id === acc.id);
         if (idx >= 0) {
-            data.accounts[idx] = { ...data.accounts[idx], ...acc, name: acc.name !== undefined ? acc.name : data.accounts[idx].name, updatedAt: Date.now() };
+            data.accounts[idx] = {
+                ...data.accounts[idx],
+                ...acc,
+                platform: normalizePlatform(acc.platform !== undefined ? acc.platform : data.accounts[idx].platform),
+                name: acc.name !== undefined ? acc.name : data.accounts[idx].name,
+                updatedAt: Date.now(),
+            };
             touchedAccountId = String(data.accounts[idx].id || '');
         }
     } else {
@@ -1002,7 +1023,7 @@ function addOrUpdateAccount(acc) {
             id: touchedAccountId,
             name: defaultName,
             code: acc.code || '',
-            platform: acc.platform || 'qq',
+            platform: normalizePlatform(acc.platform),
             gid: acc.gid ? String(acc.gid) : '',
             openId: acc.openId ? String(acc.openId) : '',
             uin: acc.uin ? String(acc.uin) : '',
