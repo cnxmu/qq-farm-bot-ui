@@ -1,4 +1,5 @@
 const process = require('node:process');
+const { isMainThread } = require('node:worker_threads');
 /**
  * 运行时存储 - 自动化开关、种子偏好、账号管理
  */
@@ -23,7 +24,7 @@ const DEFAULT_FERTILIZER_LAND_TYPES = ['gold', 'black', 'red', 'normal'];
 const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const DEFAULT_STEAL_PLANT_BLACKLIST = [];
 const MAX_FRIEND_CACHE_TOTAL = 5000;
-const WORKER_PERSIST_GUARD = process.env.FARM_WORKER === '1' || !!process.env.FARM_ACCOUNT_ID;
+const WORKER_PERSIST_GUARD = !isMainThread || process.env.FARM_WORKER === '1' || !!process.env.FARM_ACCOUNT_ID;
 const STRICT_PERSIST_CONFLICT = process.env.FARM_PERSIST_STRICT_CONFLICT !== '0';
 
 const DEFAULT_OFFLINE_REMINDER = {
@@ -669,14 +670,18 @@ function saveGlobalConfig() {
             return false;
         }
 
-        globalConfig.__rev = memRev + 1;
-        const newJson = JSON.stringify(globalConfig, null, 2);
+        const nextData = { ...globalConfig, __rev: memRev + 1 };
+        const newJson = JSON.stringify(nextData, null, 2);
 
-        if (oldJson !== newJson) {
-            console.warn('[系统] 正在保存配置到:', STORE_FILE);
-            writeJsonFileAtomic(STORE_FILE, globalConfig);
-            return true;
+        // 无实际变更时不推进内存 rev，避免后续出现伪冲突
+        if (oldJson === newJson) {
+            return false;
         }
+
+        console.warn('[系统] 正在保存配置到:', STORE_FILE);
+        writeJsonFileAtomic(STORE_FILE, nextData);
+        globalConfig.__rev = memRev + 1;
+        return true;
     } catch (e) {
         console.error('保存配置失败:', e.message);
         if ((e && e.code === 'CONFIG_WRITE_CONFLICT') || STRICT_PERSIST_CONFLICT) {

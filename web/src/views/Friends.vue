@@ -12,7 +12,7 @@ const accountStore = useAccountStore()
 const friendStore = useFriendStore()
 const statusStore = useStatusStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
-const { friends, loading, friendLands, friendLandsLoading, blacklist, friendCacheUpdating, interactRecords, interactLoading, interactError } = storeToRefs(friendStore)
+const { friends, loading, friendsError, friendLands, friendLandsLoading, blacklist, friendCacheUpdating, interactRecords, interactLoading, interactError } = storeToRefs(friendStore)
 const { status, loading: statusLoading, realtimeConnected } = storeToRefs(statusStore)
 
 // Confirm Modal state
@@ -496,7 +496,10 @@ function formatInteractTime(timestamp: number) {
     </div>
 
     <div v-else-if="friends.length === 0" class="rounded-lg bg-white p-8 text-center text-gray-500 shadow dark:bg-gray-800">
-      暂无好友或数据加载失败
+      <div>{{ friendsError || '暂无好友' }}</div>
+      <div v-if="friendsError" class="mt-2 text-xs text-red-500 break-all">
+        真实错误：{{ friendsError }}
+      </div>
     </div>
 
     <div v-else-if="filteredFriends.length === 0" class="rounded-lg bg-white p-8 text-center text-gray-500 shadow dark:bg-gray-800">

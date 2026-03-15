@@ -145,6 +145,7 @@ function createDataProvider(options) {
                 bagSeedPriority,
                 intervals: body.intervals,
                 friendQuietHours: body.friendQuietHours,
+                automation: body.automation,
             };
             store.applyConfigSnapshot(snapshot, { accountId });
             const rev = nextConfigRevision();

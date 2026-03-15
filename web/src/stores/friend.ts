@@ -5,6 +5,7 @@ import api from '@/api'
 export const useFriendStore = defineStore('friend', () => {
   const friends = ref<any[]>([])
   const loading = ref(false)
+  const friendsError = ref('')
   const friendLands = ref<Record<string, any[]>>({})
   const friendLandsLoading = ref<Record<string, boolean>>({})
   const blacklist = ref<number[]>([])
@@ -68,13 +69,21 @@ export const useFriendStore = defineStore('friend', () => {
     if (!accountId)
       return
     loading.value = true
+    friendsError.value = ''
     try {
       const res = await api.get('/api/friends', {
         headers: { 'x-account-id': accountId },
       })
       if (res.data.ok) {
         friends.value = res.data.data || []
+        return
       }
+      friends.value = []
+      friendsError.value = res.data.message || '加载好友失败'
+    }
+    catch (error: any) {
+      friends.value = []
+      friendsError.value = error?.response?.data?.message || error?.message || '加载好友失败'
     }
     finally {
       loading.value = false
@@ -248,6 +257,7 @@ export const useFriendStore = defineStore('friend', () => {
   return {
     friends,
     loading,
+    friendsError,
     friendLands,
     friendLandsLoading,
     blacklist,
